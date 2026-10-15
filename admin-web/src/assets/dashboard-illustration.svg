@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="330" viewBox="0 0 480 330" fill="none" role="img" aria-label="Software discovery illustration">
+  <path d="M67 241C31 195 54 84 158 57c85-22 190-9 239 64 47 70 27 154-82 179-94 22-208-9-248-59Z" fill="#C9E8F1"/>
+  <path d="M98 72c16-12 32-20 51-25M355 66c29 11 49 27 63 49" stroke="#2C5362" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 9"/>
+  <circle cx="401" cy="183" r="33" fill="#F8C55E"/>
+  <circle cx="95" cy="221" r="23" fill="#E99784"/>
+  <circle cx="402" cy="75" r="5" fill="#E99784"/>
+  <circle cx="78" cy="91" r="4" fill="#F8C55E"/>
+  <path d="m437 231 7 7m0-7-7 7M53 149l5 5m0-5-5 5" stroke="#2C5362" stroke-width="2" stroke-linecap="round"/>
+  <g filter="url(#shadow)">
+    <rect x="110" y="86" width="266" height="174" rx="14" fill="#FEFCF6" stroke="#243C49" stroke-width="2"/>
+    <path d="M111 123h264" stroke="#243C49" stroke-width="2"/>
+    <circle cx="132" cy="105" r="4" fill="#E99784"/>
+    <circle cx="148" cy="105" r="4" fill="#F8C55E"/>
+    <circle cx="164" cy="105" r="4" fill="#9BCFC0"/>
+    <rect x="129" y="143" width="76" height="96" rx="7" fill="#E9F2EE"/>
+    <path d="M144 165h44m-44 15h31m-31 15h39m-39 15h22" stroke="#78938C" stroke-width="5" stroke-linecap="round"/>
+    <rect x="225" y="145" width="123" height="28" rx="5" fill="#E0EFF4"/>
+    <rect x="225" y="183" width="123" height="28" rx="5" fill="#F4E6D5"/>
+    <rect x="225" y="221" width="123" height="20" rx="5" fill="#E9F2EE"/>
+    <circle cx="241" cy="159" r="6" fill="#71AFC1"/>
+    <circle cx="241" cy="197" r="6" fill="#E99784"/>
+    <path d="M259 159h69M259 197h56M238 231h89" stroke="#647D83" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(12 342 262)">
+    <rect x="331" y="243" width="75" height="48" rx="7" fill="#243C49"/>
+    <path d="M346 258h20m-20 10h43m-43 10h32" stroke="#9BCFC0" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="390" cy="258" r="4" fill="#F8C55E"/>
+  </g>
+  <path d="M94 267c36 24 69 32 107 33" stroke="#6FA6B6" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 8"/>
+  <defs><filter id="shadow" x="102" y="78" width="285" height="195" filterUnits="userSpaceOnUse"><feDropShadow dx="4" dy="6" stdDeviation="3" flood-color="#426478" flood-opacity=".14"/></filter></defs>
+</svg>

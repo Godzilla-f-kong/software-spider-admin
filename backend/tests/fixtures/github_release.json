@@ -1,0 +1,11 @@
+[
+  {
+    "tag_name": "v1.2.3", "name": "Release 1.2.3", "published_at": "2026-10-01T12:00:00Z",
+    "prerelease": false, "draft": false, "body": "Stable release", "html_url": "https://github.com/acme/tool/releases/tag/v1.2.3",
+    "assets": [
+      {"name": "tool-1.2.3-win-x64.zip", "size": 100, "content_type": "application/zip", "browser_download_url": "https://github.com/acme/tool/releases/download/v1.2.3/tool-1.2.3-win-x64.zip"},
+      {"name": "tool-1.2.3-linux-x64.tar.gz", "size": 200, "content_type": "application/gzip", "browser_download_url": "https://github.com/acme/tool/releases/download/v1.2.3/tool-1.2.3-linux-x64.tar.gz"},
+      {"name": "tool-1.2.3-macos-arm64.dmg", "size": 300, "content_type": "application/octet-stream", "browser_download_url": "https://github.com/acme/tool/releases/download/v1.2.3/tool-1.2.3-macos-arm64.dmg"}
+    ]
+  }
+]

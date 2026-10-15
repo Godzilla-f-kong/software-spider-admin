@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+node_modules/
+admin-web/.npm-cache/
+dist/
+data/staging/*
+data/archive/*
+data/failed/*
+!data/staging/.gitkeep
+!data/archive/.gitkeep
+!data/failed/.gitkeep
