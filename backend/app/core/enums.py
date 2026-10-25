@@ -19,6 +19,24 @@ class SoftwareStatus(Choice):
     ARCHIVED = "ARCHIVED"
 
 
+class OriginRegion(Choice):
+    DOMESTIC = "DOMESTIC"
+    FOREIGN = "FOREIGN"
+    UNKNOWN = "UNKNOWN"
+
+
+class CpuFamily(Choice):
+    AMD = "AMD"
+    ARM = "ARM"
+    UNKNOWN = "UNKNOWN"
+
+
+class InstallType(Choice):
+    PORTABLE = "PORTABLE"
+    INSTALLER = "INSTALLER"
+    UNKNOWN = "UNKNOWN"
+
+
 class SourceType(Choice):
     OFFICIAL = "OFFICIAL"
     OFFICIAL_DOWNLOAD = "OFFICIAL_DOWNLOAD"
@@ -218,10 +236,21 @@ class JobType(Choice):
     VERIFY = "VERIFY"
     UPLOAD_BAIDU = "UPLOAD_BAIDU"
     UPLOAD_STORAGE = "UPLOAD_STORAGE"
+    REGISTER_SHARE_LINK = "REGISTER_SHARE_LINK"
     GENERATE_WEBSITE = "GENERATE_WEBSITE"
     GENERATE_XIANYU = "GENERATE_XIANYU"
     GENERATE_TAOBAO = "GENERATE_TAOBAO"
     PUBLISH_WEBSITE = "PUBLISH_WEBSITE"
+
+
+class ShareLinkSubmissionStatus(Choice):
+    INCOMPLETE = "INCOMPLETE"
+    READY = "READY"
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    SUCCESS = "SUCCESS"
+    FAILED = "FAILED"
+    UNKNOWN = "UNKNOWN"
 
 
 class JobStatus(Choice):

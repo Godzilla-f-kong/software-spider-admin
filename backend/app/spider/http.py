@@ -30,13 +30,15 @@ class SpiderHttpClient:
         self.close()
 
     def request(self, method: str, url: str, *, headers: dict[str, str] | None = None,
-                max_bytes: int = 2_000_000, allowed_host: str | None = None) -> tuple[httpx.Response, str]:
+                max_bytes: int = 2_000_000, allowed_host: str | None = None,
+                data: dict[str, str] | None = None) -> tuple[httpx.Response, str]:
         current = self.validator.validate(url)
         if allowed_host and (urlsplit(current).hostname or "").lower().removeprefix("www.") != allowed_host:
             raise SpiderError("INVALID_SOURCE", "URL left the configured website")
         request_headers = dict(headers or {})
         for redirect in range(6):
-            response = self._attempt(method, current, headers=request_headers, max_bytes=max_bytes)
+            response = self._attempt(method, current, headers=request_headers, max_bytes=max_bytes,
+                                     data=data if redirect == 0 else None)
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = response.headers.get("location")
                 if not location:
@@ -62,14 +64,15 @@ class SpiderHttpClient:
             return response, current
         raise SpiderError("INVALID_SOURCE", "Too many redirects")
 
-    def _attempt(self, method: str, url: str, *, headers: dict[str, str] | None, max_bytes: int) -> httpx.Response:
+    def _attempt(self, method: str, url: str, *, headers: dict[str, str] | None, max_bytes: int,
+                 data: dict[str, str] | None = None) -> httpx.Response:
         for attempt in range(self.retries + 1):
             remaining = self.delay - (time.monotonic() - self.last_request)
             if remaining > 0:
                 time.sleep(remaining)
             self.last_request = time.monotonic()
             try:
-                with self.client.stream(method, url, headers=headers) as response:
+                with self.client.stream(method, url, headers=headers, data=data) as response:
                     if response.status_code in {429, 500, 502, 503, 504} and attempt < self.retries:
                         retry_after = response.headers.get("retry-after", "")
                         wait = min(float(retry_after), 10) if retry_after.isdigit() else min(2 ** attempt, 10)

@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.enums import (AdapterType, AutomationStatus, DownloadStatus, LinkReviewStatus, ReleaseStatus,
-                            SourceStatus, VerificationStatus)
+                            SourceStatus)
 from app.models import DownloadLink, Software, SoftwareArtifact, SoftwareRelease, SoftwareSource, SoftwareVariant
 from app.spider.adapters import SourceAdapterFactory, SourceInput
 from app.spider.errors import SpiderError
@@ -76,7 +76,8 @@ class DiscoveryPersistenceService:
                     SoftwareVariant.release_id == existing.id, SoftwareVariant.os == artifact.os,
                     SoftwareVariant.architecture == artifact.architecture,
                     SoftwareVariant.edition == artifact.edition,
-                    SoftwareVariant.language == artifact.language))
+                    SoftwareVariant.language == artifact.language,
+                    SoftwareVariant.cpu_family == artifact.cpu_family))
                 if variant and db.scalar(select(SoftwareArtifact.id).where(
                     SoftwareArtifact.variant_id == variant.id, SoftwareArtifact.filename == artifact.filename,
                     SoftwareArtifact.package_type == artifact.package_type,
@@ -128,11 +129,12 @@ class DiscoveryPersistenceService:
                 variant = db.scalar(select(SoftwareVariant).where(
                     SoftwareVariant.release_id == release.id, SoftwareVariant.os == asset.os,
                     SoftwareVariant.architecture == asset.architecture,
-                    SoftwareVariant.edition == asset.edition, SoftwareVariant.language == asset.language))
+                    SoftwareVariant.edition == asset.edition, SoftwareVariant.language == asset.language,
+                    SoftwareVariant.cpu_family == asset.cpu_family))
                 if variant is None:
                     variant = SoftwareVariant(release_id=release.id, os=asset.os,
                                               architecture=asset.architecture, edition=asset.edition,
-                                              language=asset.language)
+                                              language=asset.language, cpu_family=asset.cpu_family)
                     db.add(variant)
                     db.flush()
                     counts["variants"] += 1
@@ -142,10 +144,10 @@ class DiscoveryPersistenceService:
                     SoftwareArtifact.source_url == asset.download_url))
                 if exists: continue
                 db.add(SoftwareArtifact(variant_id=variant.id, package_type=asset.package_type,
+                                        install_type=asset.install_type,
                                         filename=asset.filename, file_size=asset.file_size,
                                         source_url=asset.download_url,
-                                        download_status=DownloadStatus.NOT_DOWNLOADED,
-                                        verification_status=VerificationStatus.PENDING))
+                                        download_status=DownloadStatus.NOT_DOWNLOADED))
                 db.flush()
                 counts["artifacts"] += 1
         db.commit()

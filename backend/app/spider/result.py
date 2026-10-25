@@ -1,7 +1,7 @@
 from datetime import date
 from pydantic import BaseModel, Field, computed_field
 
-from app.core.enums import (Architecture, DownloadLinkProvider, DownloadLinkType,
+from app.core.enums import (Architecture, CpuFamily, DownloadLinkProvider, DownloadLinkType, InstallType,
                             OperatingSystem, PackageType)
 
 
@@ -15,6 +15,8 @@ class ArtifactCandidate(BaseModel):
     package_type: PackageType = PackageType.OTHER
     os: OperatingSystem = OperatingSystem.UNKNOWN
     architecture: Architecture = Architecture.UNKNOWN
+    cpu_family: CpuFamily = CpuFamily.UNKNOWN
+    install_type: InstallType = InstallType.UNKNOWN
     edition: str | None = None
     language: str | None = None
     status: str = "UNKNOWN"
@@ -34,6 +36,7 @@ class DownloadLinkCandidate(BaseModel):
 class VariantCandidate(BaseModel):
     os: OperatingSystem
     architecture: Architecture
+    cpu_family: CpuFamily = CpuFamily.UNKNOWN
     edition: str | None = None
     language: str | None = None
     artifacts: list[ArtifactCandidate] = Field(default_factory=list)
@@ -53,11 +56,12 @@ class ReleaseCandidate(BaseModel):
     @computed_field
     @property
     def variants(self) -> list[VariantCandidate]:
-        grouped: dict[tuple[OperatingSystem, Architecture, str | None, str | None], VariantCandidate] = {}
+        grouped: dict[tuple[OperatingSystem, Architecture, CpuFamily, str | None, str | None], VariantCandidate] = {}
         for artifact in self.artifacts:
-            key = (artifact.os, artifact.architecture, artifact.edition, artifact.language)
+            key = (artifact.os, artifact.architecture, artifact.cpu_family, artifact.edition, artifact.language)
             if key not in grouped:
                 grouped[key] = VariantCandidate(os=artifact.os, architecture=artifact.architecture,
+                                                cpu_family=artifact.cpu_family,
                                                 edition=artifact.edition, language=artifact.language)
             grouped[key].artifacts.append(artifact)
         return list(grouped.values())

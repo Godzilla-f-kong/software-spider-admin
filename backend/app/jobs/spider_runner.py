@@ -57,7 +57,8 @@ def schedule_automatic_candidate_searches(db: Session, candidate_ids: list[int] 
         CandidateStatus.DISCOVERED, CandidateStatus.REVIEWING, CandidateStatus.ACCEPTED]))
     if candidate_ids is not None:
         query = query.where(SoftwareCandidate.id.in_(candidate_ids))
-    candidates = db.scalars(query.order_by(SoftwareCandidate.priority_score.desc().nullslast(),
+    candidates = db.scalars(query.order_by(SoftwareCandidate.priority_score.is_(None),
+                                           SoftwareCandidate.priority_score.desc(),
                                            SoftwareCandidate.id)).all()
     candidate_id_set = [item.id for item in candidates]
     history = db.scalars(select(Job).where(Job.job_type == JobType.CRAWL,
@@ -154,6 +155,29 @@ def _run(job_id: int) -> None:
                     job.message = "Complete"
                 job.finished_at = beijing_now()
             db.commit()
+            if (job.job_type is JobType.CRAWL and job.target_type in {"candidate_auto_search", "crawl_pool"}
+                    and job.status is JobStatus.SUCCESS):
+                if job.target_type == "candidate_auto_search":
+                    from app.jobs.automatic_catalog import register_successful_candidate_crawl
+                    register_successful_candidate_crawl(db, job)
+                try:
+                    from app.storage.share_link_registry import prepare_crawl_job
+                    prepare_crawl_job(db, job)
+                    db.commit()
+                    if settings.cloud_integration_api_key:
+                        from app.storage.share_link_registry import enqueue_ready
+                        from app.jobs.share_link_runner import enqueue as enqueue_share_link
+                        for share_job in enqueue_ready(db):
+                            enqueue_share_link(share_job.id)
+                except Exception:
+                    db.rollback()
+                    logger.exception("Automatic cloud share-link registration scheduling failed crawl_job_id=%s", job.id)
+                try:
+                    if job.target_type == "candidate_auto_search":
+                        from app.jobs.automatic_downloads import schedule_completed_crawl_downloads
+                        schedule_completed_crawl_downloads(job_ids=[job.id])
+                except Exception:
+                    logger.exception("Automatic link download scheduling failed crawl_job_id=%s", job.id)
         except SpiderError as exc:
             db.rollback()
             _fail(db, job_id, exc.code, exc.message)

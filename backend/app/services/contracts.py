@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from app.models import GeneratedContent, SoftwareArtifact
+from app.models import GeneratedContent
 from app.spider.adapters import SourceInput
 from app.spider.result import DiscoveryResult
 
@@ -26,10 +26,6 @@ class Downloader(Protocol):
 
 class SourceAdapter(Protocol):
     def discover(self, source: SourceInput) -> DiscoveryResult: ...
-
-
-class ArtifactVerifier(Protocol):
-    def verify(self, artifact: SoftwareArtifact, path: Path) -> bool: ...
 
 
 class StorageProvider(Protocol):

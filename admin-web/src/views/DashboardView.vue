@@ -34,7 +34,7 @@ onMounted(async () => {
     <section class="dashboard-hero">
       <div class="hero-copy"><span class="section-kicker">SOFTWARE RESOURCE STUDIO · 01</span>
         <h1>{{ tr('把软件资源，整理得井井有条。', 'A clearer view of every software resource.') }}</h1>
-        <p>{{ tr('从发现来源、整理版本到验证安装包，所有工作都从这里开始。', 'Discover sources, organize releases, and verify installers from one workspace.') }}</p>
+        <p>{{ tr('从发现软件来源、整理版本到下载归档，所有工作都从这里开始。', 'Discover software sources, organize releases, and download installers from one workspace.') }}</p>
         <div class="hero-actions"><router-link class="hero-primary" to="/software">{{ tr('查看已抓取软件', 'Explore software') }} <span aria-hidden="true">↗</span></router-link>
           <router-link class="hero-secondary" to="/sources">{{ tr('管理抓取池来源', 'Manage sources') }} <span aria-hidden="true">→</span></router-link></div>
       </div>

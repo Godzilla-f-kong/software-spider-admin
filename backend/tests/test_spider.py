@@ -9,7 +9,8 @@ from sqlalchemy import BigInteger
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import Session
 
-from app.core.enums import AdapterType, Architecture, OperatingSystem, PackageType, SourceType
+from app.core.enums import (AdapterType, Architecture, CpuFamily, InstallType, OperatingSystem,
+                            PackageType, SourceType)
 from app.db.base import Base
 from app.models import DownloadLink, Software, SoftwareArtifact, SoftwareRelease, SoftwareSource, SoftwareVariant
 from app.spider.adapters import (GenericHtmlAdapter, GithubReleaseAdapter, SourceInput,
@@ -49,6 +50,16 @@ def test_version_parser(raw, expected):
 def test_classifier(filename, os, arch, package):
     result = ArtifactClassifier().classify(filename)
     assert (result.os, result.architecture, result.package_type) == (os, arch, package)
+
+
+def test_classifier_collects_lifecycle_attributes():
+    classifier = ArtifactClassifier()
+    portable = classifier.classify("editor-win-x64-zh-cn-portable.zip")
+    assert (portable.cpu_family, portable.install_type, portable.language) == (
+        CpuFamily.AMD, InstallType.PORTABLE, "ZH")
+    arm_installer = classifier.classify("editor-linux-aarch64-en.rpm")
+    assert (arm_installer.cpu_family, arm_installer.install_type, arm_installer.language) == (
+        CpuFamily.ARM, InstallType.INSTALLER, "EN")
 
 
 def test_url_normalizer_preserves_query_and_blocks_unsafe():
@@ -105,6 +116,17 @@ def test_generic_html_extracts_cloud_links_without_requesting_shares():
     assert [link.provider.value for link in links] == ["QUARK", "XUNLEI", "OTHER"]
     assert [link.access_code for link in links] == [None, "8qu6", "3519"]
     assert links[1].link_url.endswith("?pwd=8qu6")
+
+
+def test_generic_html_associates_single_page_baidu_code_with_share():
+    html = ('<p>提取码：jzcy</p>'
+            '<a href="https://pan.baidu.com/s/1abc">百度网盘</a>')
+    def handler(request):
+        if request.url.path == "/robots.txt": return httpx.Response(404)
+        return httpx.Response(200, text=html, headers={"content-type": "text/html"})
+    with mock_client(handler) as http:
+        result = GenericHtmlAdapter(http).discover(SourceInput(1, 2, "https://example.com/tool.html"))
+    assert result.releases[0].links[0].access_code == "jzcy"
 
 
 def test_generic_html_uses_head_for_extensionless_link():

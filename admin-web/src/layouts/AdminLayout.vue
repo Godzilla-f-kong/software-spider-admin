@@ -22,6 +22,7 @@ const currentSection = computed(() => {
     artifacts: ["安装包文件", "Artifacts"],
     sources: ["抓取池来源", "Sources"],
     links: ["网盘链接与下载入口", "Download links"],
+    "share-links": ["云盘分享链接登记", "Cloud share link registry"],
     downloads: ["下载任务", "Downloads"],
     storage: ["文件存储位置", "Storage"],
     content: ["生成内容草稿", "Content drafts"],
@@ -57,6 +58,7 @@ function changeLanguage(value: string | number | boolean | undefined): void {
           <el-menu-item index="/candidates">{{ tr('软件候选池', 'Candidates') }}</el-menu-item>
           <el-menu-item index="/crawl-pools"><img class="menu-icon" :src="webUrlIcon" alt="" aria-hidden="true" />{{ tr('URL 抓取池', 'URL crawl pool') }}</el-menu-item>
           <el-menu-item index="/links">{{ tr('网盘链接与下载入口', 'Download links') }}</el-menu-item>
+          <el-menu-item index="/share-links">{{ tr('云盘分享链接登记', 'Cloud share link registry') }}</el-menu-item>
         </el-sub-menu>
         <el-sub-menu index="catalog"><template #title><span class="nav-symbol">▦</span>{{ tr('资源目录', 'Catalog') }}</template>
           <el-menu-item index="/software">{{ tr('已抓取软件', 'Crawled software') }}</el-menu-item>
@@ -93,7 +95,14 @@ function changeLanguage(value: string | number | boolean | undefined): void {
         </div>
       </el-header>
       <el-main>
-        <div class="content-frame"><router-view /></div>
+        <div class="content-frame">
+          <router-view v-slot="{ Component, route }">
+            <keep-alive include="ResourceView" :max="20">
+              <component :is="Component" v-if="route.meta.keepAlive" :key="route.name" />
+            </keep-alive>
+            <component :is="Component" v-if="!route.meta.keepAlive" />
+          </router-view>
+        </div>
       </el-main>
     </el-container>
   </el-container>

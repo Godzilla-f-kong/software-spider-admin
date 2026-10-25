@@ -2,6 +2,7 @@ import hashlib
 
 from sqlalchemy import BigInteger, create_engine, select
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
@@ -56,6 +57,20 @@ def test_candidate_is_automatically_queued_for_all_enabled_pools(monkeypatch):
 
         assert spider_runner.schedule_automatic_candidate_searches(db, candidate_ids=[candidate.id]) == []
         assert len(db.scalars(select(Job).where(Job.target_type == "candidate_auto_search")).all()) == 1
+
+
+def test_candidate_priority_order_compiles_for_mysql_without_nulls_last():
+    statement = select(SoftwareCandidate).order_by(
+        SoftwareCandidate.priority_score.is_(None),
+        SoftwareCandidate.priority_score.desc(),
+        SoftwareCandidate.id,
+    )
+
+    sql = str(statement.compile(dialect=mysql.dialect()))
+
+    assert "NULLS LAST" not in sql
+    assert "priority_score IS NULL" in sql
+    assert "priority_score DESC" in sql
 
 
 def test_admin_candidate_and_url_pool_creation_auto_queue_without_start_action(monkeypatch):

@@ -68,6 +68,7 @@ class SoftwareWrite(BaseModel):
     developer: str | None = None
     category: str | None = None
     license: str | None = None
+    origin_region: e.OriginRegion = e.OriginRegion.UNKNOWN
     official_url: str | None = None
     summary: str | None = None
     description: str | None = None
@@ -112,6 +113,7 @@ class VariantWrite(BaseModel):
     release_id: int
     os: e.OperatingSystem
     architecture: e.Architecture
+    cpu_family: e.CpuFamily = e.CpuFamily.UNKNOWN
     edition: str | None = None
     language: str | None = None
     min_os_version: str | None = None
@@ -123,26 +125,23 @@ class VariantRead(ReadBase, VariantWrite):
 
 
 class ArtifactWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     variant_id: int
     package_type: e.PackageType
+    install_type: e.InstallType = e.InstallType.UNKNOWN
     filename: str = Field(min_length=1, max_length=512)
     file_size: int | None = Field(default=None, ge=0)
     source_url: str | None = None
-    local_path: str | None = None
-    sha256: str | None = Field(default=None, min_length=64, max_length=64)
-    md5: str | None = Field(default=None, min_length=32, max_length=32)
-    signature_status: e.SignatureStatus = e.SignatureStatus.UNKNOWN
-    verification_status: e.VerificationStatus = e.VerificationStatus.PENDING
     download_status: e.DownloadStatus = e.DownloadStatus.NOT_DOWNLOADED
 
 
 class ArtifactRead(ReadBase, ArtifactWrite):
+    md5: str | None = None
+    sha256: str | None = None
+    local_path: str | None = None
     resolved_url: str | None = None
     downloaded_at: BeijingDateTime | None = None
-    verified_at: BeijingDateTime | None = None
-    manual_reviewed_at: BeijingDateTime | None = None
-    verification_details: dict[str, Any] | None = None
-    redistribution_status: e.RedistributionStatus = e.RedistributionStatus.UNKNOWN
 
 
 class DownloadLinkWrite(BaseModel):
@@ -226,6 +225,7 @@ class JobWrite(BaseModel):
 class JobRead(ReadBase, JobWrite):
     status: e.JobStatus
     progress: int
+    auto_download_processed: bool = False
     error_message: str | None
     result: dict[str, Any] | None
     started_at: BeijingDateTime | None

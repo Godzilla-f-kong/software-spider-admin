@@ -29,7 +29,7 @@ export const api = {
   async update(resource: string, id: number, data: Record<string, unknown>): Promise<Row> {
     return (await client.patch<Row>(`/${resource}/${id}`, data)).data
   },
-  async action(path: string): Promise<Row> {
-    return (await client.post<Row>(path)).data
+  async action<T = Row>(path: string, data?: Record<string, unknown>, timeout = 15000): Promise<T> {
+    return (await client.post<T>(path, data, { timeout })).data
   },
 }

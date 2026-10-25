@@ -123,6 +123,7 @@ class SelfHostedPanProvider:
                     "filemodal": 0,
                     "create": True,
                     "identifier": identifier,
+                    "software_metadata": metadata.get("software_metadata", {}),
                 },
             )
             response.raise_for_status()

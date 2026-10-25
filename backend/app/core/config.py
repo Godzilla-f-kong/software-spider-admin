@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     download_connect_timeout: float = 15
     download_max_retries: int = 3
     download_chunk_size: int = 262144
-    download_max_concurrency: int = 2
+    download_max_concurrency: int = 5
     download_user_agent: str = "software_spider/0.3 (+local admin; direct artifact download)"
     download_max_file_size: int = 8589934592
     download_min_free_space: int = 1073741824
@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     storage_upload_chunk_size: int = 4 * 1024 * 1024
     self_hosted_base_url: str = "http://192.168.0.100:9000"
     self_hosted_api_key: str = ""
+    cloud_integration_api_key: str = ""
+    cloud_sharelink_path: str = "/sharelink/create-online"
     self_hosted_username: str = ""
     self_hosted_chunk_size: int = 4 * 1024 * 1024
     self_hosted_timeout: float = 120

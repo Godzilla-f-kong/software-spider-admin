@@ -20,6 +20,7 @@ interface SettingsResponse extends EditableSettings {
   timezone: string; current_time: string; spider_restart_required: boolean
   downloader: string; ai: string; baidu_pan: string; github_api: string; external_search: string; ai_page_recognition: string
   download_concurrency: number; download_timeout: number; download_max_file_size: number
+  cloud_sharelink_api: string; cloud_sharelink_url: string
 }
 interface StorageAccount { id: number; provider: string; name: string; expires_at: string; status: string }
 
@@ -94,6 +95,7 @@ onMounted(() => { void load().catch(() => undefined) })
       <el-descriptions-item label="AI"><StatusTag :value="settings.ai" /></el-descriptions-item>
       <el-descriptions-item :label="tr('百度网盘', 'Baidu Pan')"><StatusTag :value="settings.baidu_pan" /> <el-button size="small" @click="connectBaidu">{{ tr('连接百度网盘', 'Connect Baidu Pan') }}</el-button> <el-button size="small" @click="load">{{ tr('刷新', 'Refresh') }}</el-button></el-descriptions-item>
       <el-descriptions-item :label="tr('局域网云盘', 'Local cloud drive')"><StatusTag :value="selfHostedProvider?.configured ? 'CONFIGURED' : 'NOT_CONFIGURED'" /> {{ selfHostedProvider?.base_url }} · {{ selfHostedProvider?.category_count || 0 }} {{ tr('个文件类别', 'file categories') }}</el-descriptions-item>
+      <el-descriptions-item :label="tr('永久分享登记接口', 'Permanent share registration API')"><StatusTag :value="settings.cloud_sharelink_api" /> {{ settings.cloud_sharelink_url }}</el-descriptions-item>
     </el-descriptions>
     <el-alert type="info" :closable="false" style="margin-top:12px" :title="tr('百度创建分享需企业认证并开通付费分享服务；开放 API 暂无取消分享接口，需在百度网盘手动取消。', 'Baidu share creation requires enterprise approval and paid access. The documented open API has no cancel-share endpoint; cancel shares in Baidu Pan.')" />
     <el-table v-if="baiduAccounts.length" :data="baiduAccounts" border size="small" style="margin-top:12px"><el-table-column prop="name" :label="tr('网盘账号', 'Account')" /><el-table-column :label="tr('状态', 'Status')"><template #default="scope"><StatusTag :value="scope.row.status" /></template></el-table-column><el-table-column :label="tr('令牌到期时间', 'Token expiry')"><template #default="scope">{{ formatBeijingTime(scope.row.expires_at) }}</template></el-table-column></el-table>

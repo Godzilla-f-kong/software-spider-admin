@@ -11,8 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
-from app.core.enums import (Architecture, OperatingSystem, PackageType, RedistributionStatus,
-                            StorageProviderType, UploadStatus, VerificationStatus)
+from app.core.enums import Architecture, OperatingSystem, PackageType, StorageProviderType, UploadStatus
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -105,17 +104,12 @@ def test_upload_job_and_share_lifecycle(tmp_path, monkeypatch):
         variant = SoftwareVariant(release_id=release.id, os=OperatingSystem.WINDOWS, architecture=Architecture.X64)
         db.add(variant); db.flush()
         artifact = SoftwareArtifact(variant_id=variant.id, filename="demo.zip", package_type=PackageType.ZIP,
-                                    local_path="archive/demo/1/windows/x64/demo.zip",
-                                    verification_status=VerificationStatus.VERIFIED)
+                                    local_path="archive/demo/1/windows/x64/demo.zip")
         db.add(artifact); db.flush()
         path = tmp_path / artifact.local_path
         path.parent.mkdir(parents=True)
         path.write_bytes(b"verified")
         save_oauth_account(db, "test", {"access_token": "secret", "refresh_token": "refresh", "expires_in": 3600})
-        with pytest.raises(StorageError, match="REDISTRIBUTION_NOT_ALLOWED"):
-            queue_upload(db, artifact.id)
-        artifact.redistribution_status = RedistributionStatus.ALLOWED
-        db.commit()
         job = queue_upload(db, artifact.id)
         assert job.status.value == "PENDING"
         with pytest.raises(StorageError, match="UPLOAD_IN_PROGRESS"):
@@ -156,6 +150,14 @@ def test_storage_crud_keeps_managed_providers_protected():
         app.dependency_overrides[get_db] = lambda: db
         try:
             client = TestClient(app)
+            created_artifact = client.post("/api/v1/artifacts", json={
+                "variant_id": variant.id, "package_type": "ZIP", "filename": "new.zip",
+                "verification_status": "VERIFIED", "redistribution_status": "ALLOWED",
+            })
+            assert created_artifact.status_code == 422
+            artifact_data = client.get(f"/api/v1/artifacts/{artifact.id}").json()
+            assert "verification_status" not in artifact_data
+            assert "redistribution_status" not in artifact_data
             assert client.post("/api/v1/storage", json={"artifact_id": artifact.id, "provider": "BAIDU"}).status_code == 422
             created = client.post("/api/v1/storage", json={"artifact_id": artifact.id, "provider": "PAN123", "remote_path": "/demo"})
             assert created.status_code == 201, created.text

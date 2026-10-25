@@ -69,6 +69,7 @@ class Software(TimestampMixin, Base):
     developer: Mapped[str | None] = mapped_column(String(255))
     category: Mapped[str | None] = mapped_column(String(100), index=True)
     license: Mapped[str | None] = mapped_column(String(100))
+    origin_region: Mapped[e.OriginRegion] = enum_column(e.OriginRegion, e.OriginRegion.UNKNOWN)
     official_url: Mapped[str | None] = mapped_column(String(2048))
     summary: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
@@ -116,6 +117,7 @@ class SoftwareVariant(TimestampMixin, Base):
     release_id: Mapped[int] = mapped_column(ForeignKey("software_releases.id", ondelete="RESTRICT"), index=True)
     os: Mapped[e.OperatingSystem] = enum_column(e.OperatingSystem)
     architecture: Mapped[e.Architecture] = enum_column(e.Architecture)
+    cpu_family: Mapped[e.CpuFamily] = enum_column(e.CpuFamily, e.CpuFamily.UNKNOWN)
     edition: Mapped[str | None] = mapped_column(String(100))
     language: Mapped[str | None] = mapped_column(String(50))
     min_os_version: Mapped[str | None] = mapped_column(String(100))
@@ -130,6 +132,7 @@ class SoftwareArtifact(TimestampMixin, Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     variant_id: Mapped[int] = mapped_column(ForeignKey("software_variants.id", ondelete="RESTRICT"), index=True)
     package_type: Mapped[e.PackageType] = enum_column(e.PackageType)
+    install_type: Mapped[e.InstallType] = enum_column(e.InstallType, e.InstallType.UNKNOWN)
     filename: Mapped[str] = mapped_column(String(512))
     file_size: Mapped[int | None] = mapped_column(BigInteger)
     source_url: Mapped[str | None] = mapped_column(String(2048))
@@ -165,6 +168,46 @@ class DownloadLink(TimestampMixin, Base):
     label: Mapped[str | None] = mapped_column(String(255))
     context_text: Mapped[str | None] = mapped_column(Text)
     review_status: Mapped[e.LinkReviewStatus] = enum_column(e.LinkReviewStatus, e.LinkReviewStatus.DISCOVERED)
+
+
+class ShareLinkSubmission(TimestampMixin, Base):
+    __tablename__ = "share_link_submissions"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_share_link_submissions_fingerprint"),
+        UniqueConstraint("download_link_id", name="uq_share_link_submissions_download_link"),
+        Index("ix_share_link_submissions_status_created", "status", "created_at"),
+        {"comment": "外部网盘分享链接登记记录 / External cloud share link registration records"},
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    download_link_id: Mapped[int | None] = mapped_column(
+        ForeignKey("download_links.id", ondelete="SET NULL"), index=True)
+    crawl_job_id: Mapped[int | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), index=True)
+    candidate_id: Mapped[int | None] = mapped_column(
+        ForeignKey("software_candidates.id", ondelete="SET NULL"), index=True)
+    software_id: Mapped[int | None] = mapped_column(ForeignKey("software.id", ondelete="SET NULL"), index=True)
+    software_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(32))
+    external_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    extract_code: Mapped[str | None] = mapped_column(String(64))
+    source_page_url: Mapped[str | None] = mapped_column(String(2048))
+    filename: Mapped[str | None] = mapped_column(String(255))
+    file_arch: Mapped[str | None] = mapped_column(String(64))
+    os: Mapped[str | None] = mapped_column(String(64))
+    architecture: Mapped[str | None] = mapped_column(String(64))
+    md5: Mapped[str | None] = mapped_column(String(32))
+    install_type: Mapped[int | None] = mapped_column(Integer)
+    filesize: Mapped[int | None] = mapped_column(BigInteger)
+    filetype: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    status: Mapped[e.ShareLinkSubmissionStatus] = enum_column(
+        e.ShareLinkSubmissionStatus, e.ShareLinkSubmissionStatus.INCOMPLETE)
+    validation_errors: Mapped[list[str] | None] = mapped_column(JSON)
+    cloud_record_id: Mapped[int | None] = mapped_column(BigInteger)
+    cloud_token: Mapped[str | None] = mapped_column(String(64))
+    cloud_link: Mapped[str | None] = mapped_column(String(2048))
+    cloud_reused: Mapped[bool | None] = mapped_column(Boolean)
+    cloud_response: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class ArtifactStorage(TimestampMixin, Base):
@@ -247,6 +290,7 @@ class Job(TimestampMixin, Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    auto_download_processed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class SystemSetting(TimestampMixin, Base):
@@ -278,6 +322,7 @@ COLUMN_COMMENTS = {
     "software_id": "关联软件 ID / Software ID",
     "slug": "唯一 URL 标识 / Unique URL slug",
     "developer": "开发者 / Developer",
+    "origin_region": "软件来源地区：国内/国外/未知",
     "license": "许可证 / License",
     "official_url": "官方网站 / Official website URL",
     "summary": "软件摘要 / Summary",
@@ -295,12 +340,14 @@ COLUMN_COMMENTS = {
     "release_id": "关联版本 ID / Release ID",
     "os": "操作系统 / Operating system",
     "architecture": "CPU 架构 / CPU architecture",
+    "cpu_family": "CPU 架构族：AMD/x86 或 ARM",
     "edition": "软件版本类型 / Edition",
     "language": "语言 / Language",
     "min_os_version": "最低操作系统版本 / Minimum OS version",
     "notes": "备注 / Notes",
     "variant_id": "关联运行环境 ID / Variant ID",
     "package_type": "安装包类型 / Package type",
+    "install_type": "安装形态：免安装/安装包",
     "filename": "文件名 / Filename",
     "file_size": "文件大小（字节）/ File size in bytes",
     "local_path": "本地文件路径 / Local file path",
@@ -343,6 +390,7 @@ COLUMN_COMMENTS["automation_status"] = "自动访问状态 / Automation status"
 COLUMN_COMMENTS["last_error"] = "最近抓取错误 / Latest discovery error"
 COLUMN_COMMENTS["source_id"] = "来源记录 ID / Source ID"
 COLUMN_COMMENTS["link_type"] = "下载入口类型 / Link type"
+COLUMN_COMMENTS["auto_download_processed"] = "抓取结果是否已进入自动下载队列 / Whether crawl results were queued for automatic download"
 COLUMN_COMMENTS["link_url"] = "网盘分享或下载入口 URL / Share or download URL"
 COLUMN_COMMENTS["source_page_url"] = "发现该链接的页面 URL / Source page URL"
 COLUMN_COMMENTS["access_code"] = "页面提供的访问码 / Access code shown on page"
@@ -360,6 +408,25 @@ for _key, _comment in {
     "target_version": "目标软件版本 / Target version",
     "target_os": "目标操作系统 / Target OS",
     "target_architecture": "目标 CPU 架构 / Target CPU architecture",
+}.items():
+    COLUMN_COMMENTS[_key] = _comment
+for _key, _comment in {
+    "fingerprint": "外链和分享码去重指纹 / External URL and share code deduplication fingerprint",
+    "download_link_id": "来源下载链接记录 ID / Source download link ID",
+    "crawl_job_id": "来源候选抓取任务 ID / Source candidate crawl job ID",
+    "candidate_id": "关联软件候选 ID / Related software candidate ID",
+    "software_name": "登记到云盘的软件名称 / Software name sent to cloud",
+    "external_url": "原始网盘分享 URL / Original cloud share URL",
+    "extract_code": "原始网盘提取码 / Original cloud share code",
+    "file_arch": "云盘文件分类 / Cloud file category",
+    "filesize": "文件大小（字节）/ File size in bytes",
+    "filetype": "云盘文件类型编号 / Cloud file type identifier",
+    "validation_errors": "完整性检查问题 / Completeness validation issues",
+    "cloud_record_id": "云盘永久分享记录 ID / Cloud permanent share record ID",
+    "cloud_token": "云盘生成的分享 token / Cloud generated share token",
+    "cloud_link": "云盘生成的永久分享链接 / Cloud generated permanent share URL",
+    "cloud_reused": "云盘是否复用了已有记录 / Whether the cloud reused an existing record",
+    "cloud_response": "经过筛选的云盘响应字段 / Selected cloud response fields",
 }.items():
     COLUMN_COMMENTS[_key] = _comment
 
@@ -419,5 +486,40 @@ for _name, _comment in {
 
 for _field in ("created_at", "updated_at"):
     _download_links.columns[_field].comment = COLUMN_COMMENTS[_field]
+
+_share_submissions = Base.metadata.tables["share_link_submissions"]
+_share_submissions.comment = "外部网盘分享链接登记记录 / External cloud share link registration records"
+for _name, _comment in {
+    "id": "登记记录主键 / Registration record ID",
+    "fingerprint": "外链和分享码去重指纹 / External URL and share code deduplication fingerprint",
+    "download_link_id": "来源下载链接记录 ID / Source download link ID",
+    "crawl_job_id": "来源候选抓取任务 ID / Source candidate crawl job ID",
+    "candidate_id": "关联软件候选 ID / Related software candidate ID",
+    "software_id": "关联正式软件 ID / Related catalog software ID",
+    "software_name": "登记到云盘的软件名称 / Software name sent to cloud",
+    "provider": "原始网盘平台 / Original share provider",
+    "external_url": "原始网盘分享 URL / Original cloud share URL",
+    "extract_code": "原始网盘提取码 / Original cloud share code",
+    "source_page_url": "发现链接的网页 URL / Page where link was discovered",
+    "filename": "云盘展示文件名 / Display filename in cloud",
+    "file_arch": "云盘文件分类 / Cloud file category",
+    "os": "目标操作系统 / Target operating system",
+    "architecture": "目标 CPU 架构 / Target CPU architecture",
+    "md5": "文件 MD5 / File MD5",
+    "install_type": "安装方式 / Installation type",
+    "filesize": "文件大小（字节）/ File size in bytes",
+    "filetype": "云盘文件类型编号 / Cloud file type identifier",
+    "status": "分享链接登记状态 / Share link registration status",
+    "validation_errors": "完整性检查问题 / Completeness validation issues",
+    "cloud_record_id": "云盘永久分享记录 ID / Cloud permanent share record ID",
+    "cloud_token": "云盘生成的分享 token / Cloud generated share token",
+    "cloud_link": "云盘生成的永久分享链接 / Cloud generated permanent share URL",
+    "cloud_reused": "云盘是否复用了已有记录 / Whether the cloud reused an existing record",
+    "cloud_response": "经过筛选的云盘响应字段 / Selected cloud response fields",
+    "error_message": "登记失败或待核查原因 / Registration error or review reason",
+    "created_at": "创建时间（北京时间）/ Created at Asia/Shanghai",
+    "updated_at": "更新时间（北京时间）/ Updated at Asia/Shanghai",
+}.items():
+    _share_submissions.columns[_name].comment = _comment
 
 Base.metadata.tables["system_settings"].columns["id"].comment = "Primary key"

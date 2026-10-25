@@ -38,7 +38,9 @@ class BaseSourceAdapter(ABC):
         kind = self.classifier.classify(filename, url, anchor_text, content_type)
         return ArtifactCandidate(filename=filename[:512], download_url=url, original_url=original_url,
                                  resolved_url=resolved_url, file_size=size, content_type=content_type or None,
-                                 os=kind.os, architecture=kind.architecture, package_type=kind.package_type)
+                                 os=kind.os, architecture=kind.architecture, cpu_family=kind.cpu_family,
+                                 install_type=kind.install_type.value, language=kind.language,
+                                 package_type=kind.package_type)
 
 
 class GithubReleaseAdapter(BaseSourceAdapter):

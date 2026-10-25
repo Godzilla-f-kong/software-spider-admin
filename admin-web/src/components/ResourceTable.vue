@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { api, type Row } from '../api/client'
@@ -22,6 +22,7 @@ const pageSize = ref(20)
 const search = ref('')
 const filters = ref<Record<string, string | number | null>>({})
 const loading = ref(false)
+const acceptingAll = ref(false)
 const dialog = ref(false)
 const editing = ref<Row | null>(null)
 const detail = ref<Row | null>(null)
@@ -30,12 +31,19 @@ const discoveryDialogOpen = computed({ get: () => discovering.value !== null,
   set: (open: boolean) => { if (!open) discovering.value = null } })
 const selectedSoftware = ref<Row[]>([])
 const title = computed(() => resourceTitle(props.config))
-const statusKeys = new Set(['status', 'automation_status', 'automatic_crawl_status', 'download_status', 'verification_status', 'signature_status'])
+const statusKeys = new Set(['status', 'automation_status', 'automatic_crawl_status', 'download_status'])
 const enumKeys = computed(() => new Set(props.config.fields.filter(field => field.options).map(field => field.key)))
 const filterKeys = computed(() => (props.config.filters ?? []).filter(key => props.fixed?.[key] === undefined))
 function columnLabel(key: string): string {
   const custom = props.config.columnLabels?.[key]
   return custom ? tr(custom.zh, custom.en) : fieldLabel(key, labels[key])
+}
+function filterOptions(key: string): readonly string[] | undefined {
+  return props.config.filterOptions?.[key] ?? props.config.fields.find(field => field.key === key)?.options
+}
+function filterOptionLabel(key: string, option: string): string {
+  if (key === 'enabled') return option === 'true' ? tr('启用', 'Enabled') : tr('停用', 'Disabled')
+  return enumLabel(option)
 }
 function updateFilter(key: string, value: number | null): void {
   filters.value[key] = value
@@ -57,8 +65,8 @@ function add() { editing.value = null; dialog.value = true }
 function selectionChange(items: Row[]): void { selectedSoftware.value = items }
 function softwareSelectable(row: Row): boolean { return row.status === 'ACTIVE' }
 function artifactSelectable(row: Row): boolean { return !row.local_exists && ['NOT_DOWNLOADED', 'FAILED'].includes(String(row.download_status)) }
-async function artifactAction(row: Row, action: 'download' | 'redownload' | 'verify'): Promise<void> {
-  if (action === 'redownload') await ElMessageBox.confirm(tr('重新下载会保留原文件，内容变化将等待人工审核。继续？', 'Re-download keeps the original; changed content requires review. Continue?'), tr('确认重新下载', 'Confirm re-download'))
+async function artifactAction(row: Row, action: 'download' | 'redownload'): Promise<void> {
+  if (action === 'redownload') await ElMessageBox.confirm(tr('重新下载会替换当前版本文件。继续？', 'Re-download will replace the current version file. Continue?'), tr('确认重新下载', 'Confirm re-download'))
   const job = await api.action(`/artifacts/${row.id}/${action}`)
   await load()
   await router.push(`/jobs/${job.id}`)
@@ -114,6 +122,34 @@ async function confirmAction(row: Row, action: 'accept' | 'reject' | 'archive') 
   await load()
   if (acceptedSoftwareId) await router.push(`/software/${acceptedSoftwareId}`)
 }
+async function acceptAllCandidates(): Promise<void> {
+  const scope = { search: search.value || undefined, status: filters.value.status ?? undefined }
+  try {
+    await ElMessageBox.confirm(
+      tr('将按当前搜索和状态筛选，接受所有分页中尚未接受的候选，并为每个候选创建正式软件。无法创建的候选会保留并列出原因。确定继续？', 'This accepts every not-yet-accepted candidate across all pages matching the current search and status, creating a software record for each. Candidates that cannot be created will be listed with a reason. Continue?'),
+      tr('确认批量接受', 'Confirm bulk acceptance'),
+      { type: 'warning', confirmButtonText: tr('全部接受', 'Accept all') },
+    )
+  } catch { return }
+
+  acceptingAll.value = true
+  try {
+    const result = await api.action<{
+      total: number
+      accepted_count: number
+      failed_count: number
+      failures: Array<{ name: string; reason: string }>
+    }>('/candidates/accept-all', scope, 120000)
+    if (result.failed_count) {
+      ElMessage.warning(tr(`已接受 ${result.accepted_count} 个，${result.failed_count} 个未能接受`, `Accepted ${result.accepted_count}; ${result.failed_count} could not be accepted`))
+      const details = result.failures.slice(0, 8).map(item => `${item.name}: ${item.reason}`).join('\n')
+      await ElMessageBox.alert(details, tr('未能接受的候选', 'Candidates not accepted'), { confirmButtonText: tr('知道了', 'Got it') })
+    } else {
+      ElMessage.success(tr(`已接受 ${result.accepted_count} 个候选`, `Accepted ${result.accepted_count} candidates`))
+    }
+    await load()
+  } finally { acceptingAll.value = false }
+}
 function view(row: Row) {
   if (props.config.path === 'software') router.push(`/software/${row.id}`)
   else if (props.config.path === 'artifacts') router.push(`/artifacts/${row.id}`)
@@ -127,23 +163,37 @@ function format(value: unknown): string {
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
-watch(() => props.fixed, () => { page.value = 1; load() }, { deep: true })
 let timer: ReturnType<typeof setInterval> | undefined
-onMounted(() => { void load(); if (props.config.path === 'jobs' || props.config.path === 'candidates') timer = setInterval(() => { void load() }, 2000) })
-onUnmounted(() => { if (timer) clearInterval(timer) })
+let active = false
+function activate(): void {
+  if (active) return
+  active = true
+  void load()
+  if (props.config.path === 'jobs' || props.config.path === 'candidates')
+    timer = setInterval(() => { void load() }, 2000)
+}
+function deactivate(): void {
+  active = false
+  if (timer) clearInterval(timer)
+  timer = undefined
+}
+onMounted(activate)
+onActivated(activate)
+onDeactivated(deactivate)
+onUnmounted(deactivate)
 </script>
 <template>
   <section class="resource-surface">
     <el-alert v-if="config.path === 'candidates'" type="info" :closable="false" style="margin-bottom:12px" :title="tr('新增候选后会自动排队。系统按候选优先级逐个扫描全部已启用 URL 池；发现匹配资源后停止该候选并处理下一个。任务和结果可在任务中心查看。', 'New candidates are queued automatically. The system scans enabled URL pools one candidate at a time by priority, then moves to the next candidate after finding a match. View progress and results in Jobs.')" />
     <div class="toolbar"><h2>{{ title }}</h2><div class="toolbar-actions">
       <el-input v-if="config.search" v-model="search" :placeholder="tr('搜索', 'Search')" clearable style="width:190px" @keyup.enter="page = 1; load()" @clear="load" />
-      <template v-for="key in filterKeys" :key="key"><RelationSelect v-if="relationResource(key)" :model-value="typeof filters[key] === 'number' ? Number(filters[key]) : null" :resource="relationResource(key) || ''" :placeholder="fieldLabel(key, labels[key])" style="width:210px" @update:model-value="updateFilter(key, $event)" /><el-select v-else-if="config.fields.find(f => f.key === key)?.options" v-model="filters[key]" :placeholder="fieldLabel(key, labels[key])" clearable style="width:150px" @change="page = 1; load()"><el-option v-for="option in config.fields.find(f => f.key === key)?.options" :key="option" :label="enumLabel(option)" :value="option" /></el-select><el-input v-else v-model="filters[key]" :placeholder="fieldLabel(key, labels[key])" clearable style="width:135px" @keyup.enter="page = 1; load()" @clear="load" /></template>
-      <el-button @click="page = 1; load()">{{ tr('查询', 'Search') }}</el-button><el-button v-if="config.path === 'software'" :disabled="!selectedSoftware.length" @click="bulkCheck">{{ tr('批量检查版本', 'Bulk check releases') }}</el-button><el-button v-if="config.path === 'artifacts'" :disabled="!selectedSoftware.length" @click="bulkDownload">{{ tr('批量下载', 'Download selected') }}</el-button><el-button type="primary" @click="add">{{ tr('新增', 'Add') }}</el-button>
+      <template v-for="key in filterKeys" :key="key"><RelationSelect v-if="relationResource(key)" :model-value="typeof filters[key] === 'number' ? Number(filters[key]) : null" :resource="relationResource(key) || ''" :placeholder="fieldLabel(key, labels[key])" style="width:210px" @update:model-value="updateFilter(key, $event)" /><el-select v-else-if="filterOptions(key)" v-model="filters[key]" :placeholder="fieldLabel(key, labels[key])" clearable style="width:150px" @change="page = 1; load()"><el-option v-for="option in filterOptions(key)" :key="option" :label="filterOptionLabel(key, option)" :value="option" /></el-select><el-input v-else v-model="filters[key]" :placeholder="fieldLabel(key, labels[key])" clearable style="width:135px" @keyup.enter="page = 1; load()" @clear="load" /></template>
+      <el-button @click="page = 1; load()">{{ tr('查询', 'Search') }}</el-button><el-button v-if="config.path === 'software'" :disabled="!selectedSoftware.length" @click="bulkCheck">{{ tr('批量检查版本', 'Bulk check releases') }}</el-button><el-button v-if="config.path === 'artifacts'" :disabled="!selectedSoftware.length" @click="bulkDownload">{{ tr('批量下载', 'Download selected') }}</el-button><el-button v-if="config.path === 'candidates'" type="success" :loading="acceptingAll" :disabled="!total" @click="acceptAllCandidates">{{ tr('一键全部接受', 'Accept all') }}</el-button><el-button type="primary" @click="add">{{ tr('新增', 'Add') }}</el-button>
     </div></div>
     <el-table v-loading="loading" :data="rows" border stripe size="small" style="width:100%" @selection-change="selectionChange">
       <el-table-column v-if="config.path === 'software' || config.path === 'artifacts'" type="selection" :selectable="config.path === 'software' ? softwareSelectable : artifactSelectable" width="45" />
       <el-table-column v-for="key in config.columns" :key="key" :prop="key" :label="columnLabel(key)" :min-width="key === 'id' ? 95 : 110" show-overflow-tooltip>
-        <template #default="scope"><router-link v-if="key === 'software_id' && scope.row[key]" :to="`/software/${scope.row[key]}`">#{{ scope.row[key] }}</router-link><span v-else-if="config.path === 'jobs' && key === 'target_id' && scope.row.target_label">{{ scope.row.target_label }} #{{ scope.row[key] }}</span><StatusTag v-else-if="statusKeys.has(key)" :value="scope.row[key]" /><span v-else-if="enumKeys.has(key)">{{ enumLabel(scope.row[key]) }}</span><span v-else>{{ format(scope.row[key]) }}</span></template>
+        <template #default="scope"><router-link v-if="key === 'software_name' && scope.row.software_id" :to="`/software/${scope.row.software_id}`">{{ scope.row.software_name }}</router-link><router-link v-else-if="key === 'software_id' && scope.row[key]" :to="`/software/${scope.row[key]}`">#{{ scope.row[key] }}</router-link><span v-else-if="config.path === 'jobs' && key === 'target_id' && scope.row.target_label">{{ scope.row.target_label }} #{{ scope.row[key] }}</span><StatusTag v-else-if="statusKeys.has(key)" :value="scope.row[key]" /><span v-else-if="enumKeys.has(key)">{{ enumLabel(scope.row[key]) }}</span><span v-else>{{ format(scope.row[key]) }}</span></template>
       </el-table-column>
       <el-table-column :label="tr('操作', 'Actions')" fixed="right" min-width="160"><template #default="scope">
         <el-button link type="primary" @click="view(scope.row)">{{ tr('查看', 'View') }}</el-button>
@@ -156,10 +206,8 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <el-button v-if="config.path === 'software' && scope.row.status === 'ACTIVE'" link type="primary" @click="checkRelease(scope.row)">{{ tr('检查版本', 'Check release') }}</el-button>
         <el-button v-if="config.path === 'sources' && scope.row.enabled && scope.row.automation_status !== 'MANUAL_REQUIRED'" link type="primary" @click="discovering = scope.row">{{ tr('发现版本', 'Discover') }}</el-button>
         <el-button v-if="config.path === 'artifacts' && artifactSelectable(scope.row)" link type="primary" @click="artifactAction(scope.row, 'download')">{{ tr('下载', 'Download') }}</el-button>
-        <el-button v-if="config.path === 'artifacts' && scope.row.local_exists && !['QUEUED', 'DOWNLOADING'].includes(String(scope.row.download_status)) && !(scope.row.staging_exists && scope.row.verification_status === 'MANUAL_REVIEW')" link type="primary" @click="artifactAction(scope.row, 'redownload')">{{ tr('重下', 'Re-download') }}</el-button>
-        <el-button v-if="config.path === 'artifacts' && (scope.row.local_exists || scope.row.staging_exists) && scope.row.verification_status !== 'VERIFYING' && !['QUEUED', 'DOWNLOADING'].includes(String(scope.row.download_status))" link type="primary" @click="artifactAction(scope.row, 'verify')">{{ tr('验证', 'Verify') }}</el-button>
+        <el-button v-if="config.path === 'artifacts' && scope.row.local_exists && !['QUEUED', 'DOWNLOADING'].includes(String(scope.row.download_status))" link type="primary" @click="artifactAction(scope.row, 'redownload')">{{ tr('重下', 'Re-download') }}</el-button>
         <el-button v-if="config.path === 'artifacts' && ['QUEUED', 'DOWNLOADING'].includes(String(scope.row.download_status))" link type="danger" @click="cancelArtifact(scope.row)">{{ tr('取消', 'Cancel') }}</el-button>
-        <el-button v-if="config.path === 'artifacts' && scope.row.verification_status === 'MANUAL_REVIEW'" link type="warning" @click="view(scope.row)">{{ tr('审核', 'Review') }}</el-button>
         <el-button v-if="config.path === 'storage' && scope.row.provider === 'LOCAL'" link type="primary" :disabled="!scope.row.local_exists" @click="openLocalDirectory(scope.row)">{{ tr('打开本地目录', 'Open local directory') }}</el-button>
       </template></el-table-column>
     </el-table>

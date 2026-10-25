@@ -8,14 +8,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 import ipaddress
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core import enums as e
 from app.db.session import get_db
-from app.models import (ArtifactStorage, CommerceListing, CrawlPool, DownloadLink, GeneratedContent, Job, Software, StorageAccount,
+from app.models import (ArtifactStorage, CommerceListing, CrawlPool, DownloadLink, GeneratedContent, Job, ShareLinkSubmission, Software, StorageAccount,
                         SoftwareArtifact, SoftwareCandidate, SoftwareRelease, SoftwareSource, SoftwareVariant)
 from app.repositories.crud import Repository
 from app.schemas import entities as s
@@ -32,12 +32,11 @@ from app.storage.providers.baidu_provider import BaiduPanProvider
 from app.storage.service import (queue_upload, queue_self_hosted_upload, save_oauth_account,
                                  create_share as storage_create_share, disable_share as storage_disable_share)
 from app.storage.self_hosted_categories import SELF_HOSTED_FILE_ARCH_CATEGORIES
-from app.storage.archive import ArchiveManager
 from app.storage.local_directory import archived_file_for_storage, open_local_directory
-from app.downloader.staging import StagingManager
-from app.downloader.errors import DownloadError
+from app.storage.archive import ArchiveManager
 from app.services.system_settings import SettingsPatch, effective_data_path, save_overrides
 from app.spider.normalizers import URLNormalizer, URLSafetyValidator
+from app.storage.share_link_registry import scan_existing_links, queue_submission, update_submission
 
 
 router = APIRouter(prefix="/api/v1")
@@ -46,7 +45,7 @@ _oauth_states: dict[str, float] = {}
 
 def storage_http_error(exc: StorageError) -> HTTPException:
     return HTTPException(501 if exc.code == "NOT_SUPPORTED_BY_OPEN_API" else
-                         409 if exc.code in {"ALREADY_UPLOADED", "UPLOAD_IN_PROGRESS", "NOT_VERIFIED", "REDISTRIBUTION_NOT_ALLOWED", "ALREADY_SHARED", "NOT_SHARED"} else 422,
+                         409 if exc.code in {"ALREADY_UPLOADED", "UPLOAD_IN_PROGRESS", "ALREADY_SHARED", "NOT_SHARED"} else 422,
                          f"{exc.code}: {exc.message}")
 
 
@@ -63,11 +62,11 @@ class Resource:
 
 RESOURCES = [
     Resource("candidates", SoftwareCandidate, s.CandidateWrite, s.CandidateRead, ("name", "normalized_name"), ("status", "category"), ("id", "name", "priority_score", "created_at", "updated_at")),
-    Resource("software", Software, s.SoftwareWrite, s.SoftwareRead, ("name", "slug", "developer"), ("status", "category"), ("id", "name", "created_at", "updated_at")),
+    Resource("software", Software, s.SoftwareWrite, s.SoftwareRead, ("name", "slug", "developer"), ("status", "category", "origin_region"), ("id", "name", "created_at", "updated_at")),
     Resource("sources", SoftwareSource, s.SourceWrite, s.SourceRead, (), ("software_id", "source_type", "status", "enabled")),
     Resource("releases", SoftwareRelease, s.ReleaseWrite, s.ReleaseRead, ("version",), ("software_id", "status")),
-    Resource("variants", SoftwareVariant, s.VariantWrite, s.VariantRead, (), ("release_id", "os", "architecture")),
-    Resource("artifacts", SoftwareArtifact, s.ArtifactWrite, s.ArtifactRead, ("filename",), ("variant_id", "download_status", "verification_status")),
+    Resource("variants", SoftwareVariant, s.VariantWrite, s.VariantRead, (), ("release_id", "os", "architecture", "cpu_family")),
+    Resource("artifacts", SoftwareArtifact, s.ArtifactWrite, s.ArtifactRead, ("filename",), ("variant_id", "download_status")),
     Resource("links", DownloadLink, s.DownloadLinkWrite, s.DownloadLinkRead, ("link_url", "label"), ("software_id", "source_id", "release_id", "provider", "link_type", "review_status")),
     Resource("storage", ArtifactStorage, s.StorageWrite, s.StorageRead, (), ("artifact_id", "provider", "status")),
     Resource("content", GeneratedContent, s.ContentWrite, s.ContentRead, ("title",), ("software_id", "release_id", "content_type", "status")),
@@ -94,7 +93,6 @@ def serialize(resource: Resource, item: Any, db: Session) -> dict[str, Any]:
             path = None
             data["local_path"] = None
         data["local_exists"] = bool(path and path.is_file())
-        data["staging_exists"] = StagingManager().complete(item.id).is_file()
     if resource.model is ArtifactStorage:
         data["local_exists"] = archived_file_for_storage(item) is not None
     if resource.model is Job:
@@ -102,8 +100,36 @@ def serialize(resource: Resource, item: Any, db: Session) -> dict[str, Any]:
         data["bytes_downloaded"] = result.get("bytes_downloaded")
         data["total_bytes"] = result.get("total_bytes")
         data["speed_bytes_per_second"] = result.get("speed_bytes_per_second")
+        payload = item.payload or {}
+        target_label = None
         if item.target_type == "candidate_auto_search":
-            data["target_label"] = (item.payload or {}).get("candidate", {}).get("name") or f"Candidate #{item.target_id}"
+            candidate = db.get(SoftwareCandidate, item.target_id)
+            target_label = candidate.name if candidate else payload.get("candidate", {}).get("name")
+        elif item.target_type == "crawl_link_download":
+            target_label = payload.get("candidate_name")
+        elif item.target_type == "candidate":
+            candidate = db.get(SoftwareCandidate, item.target_id)
+            target_label = candidate.name if candidate else None
+        elif item.target_type == "software":
+            software = db.get(Software, item.target_id)
+            target_label = software.name if software else None
+        elif item.target_type == "source":
+            source = db.get(SoftwareSource, item.target_id)
+            target_label = source.software.name if source else None
+        elif item.target_type == "release":
+            release = db.get(SoftwareRelease, item.target_id)
+            target_label = release.software.name if release else None
+        elif item.target_type == "variant":
+            variant = db.get(SoftwareVariant, item.target_id)
+            target_label = variant.release.software.name if variant else None
+        elif item.target_type == "artifact":
+            artifact = db.get(SoftwareArtifact, item.target_id)
+            target_label = artifact.variant.release.software.name if artifact else None
+        elif item.target_type == "share_link_submission":
+            submission = db.get(ShareLinkSubmission, item.target_id)
+            target_label = submission.software_name if submission else None
+        if target_label:
+            data["target_label"] = target_label
     if resource.model is SoftwareCandidate:
         data.update(automatic_crawl_job_id=None, automatic_crawl_status="WAITING_FOR_URL_POOL",
                     automatic_crawl_message=None)
@@ -134,7 +160,8 @@ def create_resource_routes(resource: Resource) -> None:
                    content_type: str | None = None, platform: str | None = None,
                    provider: str | None = None, source_type: str | None = None,
                    os: str | None = None, architecture: str | None = None,
-                   download_status: str | None = None, verification_status: str | None = None,
+                   origin_region: str | None = None, cpu_family: str | None = None,
+                   download_status: str | None = None,
                    job_type: str | None = None, target_type: str | None = None,
                    target_id: int | None = None, enabled: bool | None = None,
                    db: Session = Depends(get_db)) -> dict[str, Any]:
@@ -145,6 +172,39 @@ def create_resource_routes(resource: Resource) -> None:
         rows, total = Repository(db, resource.model).list(page=page, page_size=page_size,
                 search=search, search_fields=resource.search, filters=filters, sort=sort)
         items = [serialize(resource, row, db) for row in rows]
+        linked_software_query = None
+        if resource.model in {SoftwareSource, SoftwareRelease, DownloadLink, GeneratedContent, CommerceListing}:
+            linked_software_query = select(resource.model.id, Software.id, Software.name).join(
+                Software, Software.id == resource.model.software_id)
+        elif resource.model is SoftwareVariant:
+            linked_software_query = (select(SoftwareVariant.id, Software.id, Software.name)
+                                     .join(SoftwareRelease, SoftwareRelease.id == SoftwareVariant.release_id)
+                                     .join(Software, Software.id == SoftwareRelease.software_id))
+        elif resource.model is SoftwareArtifact:
+            linked_software_query = (select(SoftwareArtifact.id, Software.id, Software.name)
+                                     .join(SoftwareVariant, SoftwareVariant.id == SoftwareArtifact.variant_id)
+                                     .join(SoftwareRelease, SoftwareRelease.id == SoftwareVariant.release_id)
+                                     .join(Software, Software.id == SoftwareRelease.software_id))
+        elif resource.model is ArtifactStorage:
+            software_rows = db.execute(select(ArtifactStorage.id, Software.id, Software.name)
+                                       .join(SoftwareArtifact, SoftwareArtifact.id == ArtifactStorage.artifact_id)
+                                       .join(SoftwareVariant, SoftwareVariant.id == SoftwareArtifact.variant_id)
+                                       .join(SoftwareRelease, SoftwareRelease.id == SoftwareVariant.release_id)
+                                       .join(Software, Software.id == SoftwareRelease.software_id)
+                                       .where(ArtifactStorage.id.in_([row.id for row in rows]))).all()
+            software_by_item = {item_id: (software_id, name)
+                                for item_id, software_id, name in software_rows}
+            for row, data in zip(rows, items):
+                data.update(software_id=software_by_item[row.id][0], software_name=software_by_item[row.id][1])
+        else:
+            software_by_item = {}
+        if rows and linked_software_query is not None:
+            software_rows = db.execute(linked_software_query.where(
+                resource.model.id.in_([row.id for row in rows]))).all()
+            software_by_item = {item_id: (software_id, name)
+                                for item_id, software_id, name in software_rows}
+            for row, data in zip(rows, items):
+                data.update(software_id=software_by_item[row.id][0], software_name=software_by_item[row.id][1])
         if resource.model is SoftwareCandidate and rows:
             latest_jobs = db.execute(select(Job.target_id, Job.id, Job.status, Job.message).where(
                 Job.job_type == e.JobType.CRAWL, Job.target_type == "candidate_auto_search",
@@ -162,8 +222,8 @@ def create_resource_routes(resource: Resource) -> None:
 
     def create_item(payload: dict[str, Any] = Body(...), db: Session = Depends(get_db)) -> dict[str, Any]:
         if resource.model is Job:
-            if payload.get("job_type") in {"DOWNLOAD", "VERIFY", "UPLOAD_STORAGE", "UPLOAD_BAIDU"}:
-                raise HTTPException(422, "Use the Artifact Download or Verify action")
+            if payload.get("job_type") in {"DOWNLOAD", "VERIFY", "UPLOAD_STORAGE", "UPLOAD_BAIDU", "REGISTER_SHARE_LINK"}:
+                raise HTTPException(422, "Use the corresponding artifact or storage action")
             payload = {key: value for key, value in payload.items() if key in s.JobWrite.model_fields}
         if resource.model is ArtifactStorage and payload.get("provider") in {"LOCAL", "BAIDU"}:
             raise HTTPException(422, "LOCAL and BAIDU storage are managed by workers")
@@ -173,8 +233,8 @@ def create_resource_routes(resource: Resource) -> None:
             fail_validation(exc)
         data = parsed.model_dump(exclude_unset=True)
         if resource.model is SoftwareArtifact:
-            if data.get("download_status") not in {None, e.DownloadStatus.NOT_DOWNLOADED} or data.get("verification_status") not in {None, e.VerificationStatus.PENDING} or any(data.get(key) for key in ("local_path", "sha256", "md5")):
-                raise HTTPException(422, "New artifacts must begin undownloaded and unverified")
+            if data.get("download_status") not in {None, e.DownloadStatus.NOT_DOWNLOADED}:
+                raise HTTPException(422, "New artifacts must begin undownloaded")
         if resource.model is SoftwareCandidate:
             data["normalized_name"] = (data.get("normalized_name") or data["name"]).strip().casefold()
             if data.get("status") == e.CandidateStatus.ACCEPTED:
@@ -209,6 +269,24 @@ def create_resource_routes(resource: Resource) -> None:
         if item is None:
             raise HTTPException(404, f"{resource.path} item not found")
         data = serialize(resource, item, db)
+        if resource.model is Software:
+            data["catalog_overview"] = {
+                "source_count": db.scalar(select(func.count()).select_from(SoftwareSource).where(
+                    SoftwareSource.software_id == item.id)) or 0,
+                "release_count": db.scalar(select(func.count()).select_from(SoftwareRelease).where(
+                    SoftwareRelease.software_id == item.id)) or 0,
+                "artifact_count": db.scalar(select(func.count()).select_from(SoftwareArtifact)
+                    .join(SoftwareVariant, SoftwareVariant.id == SoftwareArtifact.variant_id)
+                    .join(SoftwareRelease, SoftwareRelease.id == SoftwareVariant.release_id)
+                    .where(SoftwareRelease.software_id == item.id)) or 0,
+                "local_archive_count": db.scalar(select(func.count()).select_from(ArtifactStorage)
+                    .join(SoftwareArtifact, SoftwareArtifact.id == ArtifactStorage.artifact_id)
+                    .join(SoftwareVariant, SoftwareVariant.id == SoftwareArtifact.variant_id)
+                    .join(SoftwareRelease, SoftwareRelease.id == SoftwareVariant.release_id)
+                    .where(SoftwareRelease.software_id == item.id,
+                           ArtifactStorage.provider == e.StorageProviderType.LOCAL,
+                           ArtifactStorage.status == e.StorageStatus.AVAILABLE)) or 0,
+            }
         if resource.model is SoftwareCandidate:
             attach_automatic_crawl_status(data, item.id, db)
         return data
@@ -271,6 +349,10 @@ def create_resource_routes(resource: Resource) -> None:
 class PoolScanRequest(BaseModel):
     candidate_ids: list[int] | None = Field(default=None, max_length=50)
 
+
+class AcceptAllCandidatesRequest(BaseModel):
+    search: str | None = None
+    status: e.CandidateStatus | None = None
 
 def _queue_pool_scan(db: Session, pool_id: int, ids: list[int] | None) -> Job:
     target_query = select(SoftwareCandidate).where(SoftwareCandidate.status.in_([
@@ -509,21 +591,6 @@ def finish_baidu_oauth(code: str, state: str, db: Session = Depends(get_db)) -> 
         provider.close()
 
 
-class RedistributionUpdate(BaseModel):
-    status: e.RedistributionStatus
-
-
-@router.post("/artifacts/{artifact_id}/redistribution")
-def update_redistribution(artifact_id: int, request: RedistributionUpdate,
-                          db: Session = Depends(get_db)) -> dict[str, Any]:
-    artifact = db.get(SoftwareArtifact, artifact_id)
-    if artifact is None:
-        raise HTTPException(404, "Artifact not found")
-    artifact.redistribution_status = request.status
-    db.commit()
-    return serialize(RESOURCES[5], artifact, db)
-
-
 class UploadStorageRequest(BaseModel):
     provider: e.StorageProviderType = e.StorageProviderType.BAIDU
     account_id: int | None = None
@@ -610,6 +677,30 @@ def lookup_options(kind: str, q: str = "", selected_id: int | None = Query(None,
                                   variant_id=variant_id, limit=limit)}
 
 
+@router.post("/candidates/accept-all")
+def accept_all_candidates(request: AcceptAllCandidatesRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    query = select(SoftwareCandidate).where(SoftwareCandidate.status != e.CandidateStatus.ACCEPTED)
+    if request.status is not None:
+        query = query.where(SoftwareCandidate.status == request.status)
+    search = (request.search or "").strip()
+    if search:
+        query = query.where(or_(SoftwareCandidate.name.ilike(f"%{search}%"),
+                                SoftwareCandidate.normalized_name.ilike(f"%{search}%")))
+
+    candidates = list(db.scalars(query.order_by(SoftwareCandidate.id)))
+    accepted: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for candidate in candidates:
+        try:
+            software = accept_candidate(db, candidate.id)
+            accepted.append({"candidate_id": candidate.id, "software_id": software.id, "name": software.name})
+        except HTTPException as exc:
+            failures.append({"candidate_id": candidate.id, "name": candidate.name, "reason": str(exc.detail)})
+
+    return {"total": len(candidates), "accepted_count": len(accepted), "failed_count": len(failures),
+            "accepted": accepted, "failures": failures}
+
+
 @router.post("/candidates/{candidate_id}/accept")
 def accept(candidate_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     software = accept_candidate(db, candidate_id)
@@ -667,18 +758,6 @@ def redownload(artifact_id: int, db: Session = Depends(get_db)) -> dict[str, Any
     return serialize(RESOURCES[-1], job, db)
 
 
-@router.post("/artifacts/{artifact_id}/verify")
-def verify(artifact_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
-    job = create_artifact_job(db, artifact_id, e.JobType.VERIFY)
-    if job.status is e.JobStatus.PENDING and not enqueue_download(job.id):
-        job.status = e.JobStatus.FAILED
-        job.error_message = "Verification queue is full"
-        job.finished_at = beijing_now()
-        db.commit()
-        raise HTTPException(503, "Verification queue is full")
-    return serialize(RESOURCES[-1], job, db)
-
-
 @router.post("/jobs/{job_id}/cancel")
 def cancel_job(job_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
     job = db.get(Job, job_id)
@@ -715,52 +794,6 @@ def bulk_download(artifact_ids: list[int] = Body(...), db: Session = Depends(get
         except HTTPException:
             continue
     return {"jobs": jobs}
-
-
-@router.post("/artifacts/{artifact_id}/review/{decision}")
-def review_artifact(artifact_id: int, decision: str, db: Session = Depends(get_db)) -> dict[str, Any]:
-    if decision not in {"approve", "reject"}:
-        raise HTTPException(404, "Unknown review decision")
-    artifact = db.get(SoftwareArtifact, artifact_id)
-    if artifact is None:
-        raise HTTPException(404, "Artifact not found")
-    if artifact.verification_status is not e.VerificationStatus.MANUAL_REVIEW:
-        raise HTTPException(409, "Artifact is not awaiting manual review")
-    from app.verification.service import hashes
-    manager = ArchiveManager()
-    staged = StagingManager().complete(artifact.id)
-    if decision == "reject":
-        if staged.exists():
-            manager.fail(staged, artifact.id)
-        previous = manager.resolve_relative(artifact.local_path) if artifact.local_path else None
-        artifact.verification_status = e.VerificationStatus.VERIFIED if previous and previous.is_file() else e.VerificationStatus.REJECTED
-    else:
-        if staged.exists():
-            sha, md5, size = hashes(staged)
-            variant, release = artifact.variant, artifact.variant.release
-            filename = (artifact.verification_details or {}).get("metadata", {}).get("download_filename") or artifact.filename
-            relative = manager.archive_relative(release.software.slug, release.version, variant.os.value,
-                                                variant.architecture.value, filename)
-            if (manager.root / relative).exists():
-                relative = relative.with_name(f"{relative.stem}-{sha[:8]}{relative.suffix}")
-            manager.archive(staged, relative)
-            artifact.local_path = relative.as_posix()
-            artifact.filename = filename
-            artifact.sha256, artifact.md5, artifact.file_size = sha, md5, size
-        elif not artifact.local_path or not manager.resolve_relative(artifact.local_path).is_file():
-            raise HTTPException(409, "No local file is available for approval")
-        artifact.verification_status = e.VerificationStatus.VERIFIED
-        local = db.scalar(select(ArtifactStorage).where(ArtifactStorage.artifact_id == artifact.id,
-            ArtifactStorage.provider == e.StorageProviderType.LOCAL).limit(1))
-        if local is None:
-            local = ArtifactStorage(artifact_id=artifact.id, provider=e.StorageProviderType.LOCAL)
-            db.add(local)
-        local.remote_path = artifact.local_path
-        local.status = e.StorageStatus.AVAILABLE
-    artifact.manual_reviewed_at = beijing_now()
-    db.commit()
-    db.refresh(artifact)
-    return serialize(RESOURCES[5], artifact, db)
 
 
 def _spider_job(db: Session, source: SoftwareSource, job_type: e.JobType,
@@ -885,7 +918,125 @@ def settings_status(db: Session = Depends(get_db)) -> dict[str, Any]:
             "spider_restart_required": False,
             "github_api": "CONFIGURED" if settings.github_token else "NOT_CONFIGURED",
             "external_search": "CONFIGURED" if settings.google_cse_api_key and settings.google_cse_cx else "NOT_CONFIGURED",
-            "ai_page_recognition": "CONFIGURED" if settings.ai_page_recognition_enabled and settings.openai_api_key and settings.ai_page_model else "NOT_CONFIGURED"}
+            "ai_page_recognition": "CONFIGURED" if settings.ai_page_recognition_enabled and settings.openai_api_key and settings.ai_page_model else "NOT_CONFIGURED",
+            "cloud_sharelink_api": "CONFIGURED" if settings.cloud_integration_api_key and settings.self_hosted_base_url else "NOT_CONFIGURED",
+            "cloud_sharelink_url": settings.self_hosted_base_url.rstrip("/") + settings.cloud_sharelink_path}
+
+
+def serialize_share_submission(row: ShareLinkSubmission) -> dict[str, Any]:
+    return {
+        "id": row.id, "software_id": row.software_id, "candidate_id": row.candidate_id,
+        "crawl_job_id": row.crawl_job_id, "download_link_id": row.download_link_id,
+        "software_name": row.software_name, "provider": row.provider,
+        "external_url": row.external_url, "extract_code": row.extract_code,
+        "source_page_url": row.source_page_url, "filename": row.filename,
+        "file_arch": row.file_arch, "os": row.os, "architecture": row.architecture,
+        "status": row.status.value, "validation_errors": row.validation_errors or [],
+        "cloud_record_id": row.cloud_record_id, "cloud_link": row.cloud_link,
+        "cloud_reused": row.cloud_reused, "error_message": row.error_message,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@router.get("/share-links")
+def list_share_link_submissions(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
+                                status: e.ShareLinkSubmissionStatus | None = None,
+                                search: str | None = None, db: Session = Depends(get_db)) -> dict[str, Any]:
+    query = select(ShareLinkSubmission)
+    count_query = select(func.count()).select_from(ShareLinkSubmission)
+    if status:
+        query = query.where(ShareLinkSubmission.status == status)
+        count_query = count_query.where(ShareLinkSubmission.status == status)
+    if search:
+        condition = or_(ShareLinkSubmission.software_name.ilike(f"%{search}%"),
+                        ShareLinkSubmission.external_url.ilike(f"%{search}%"))
+        query, count_query = query.where(condition), count_query.where(condition)
+    total = db.scalar(count_query) or 0
+    rows = db.scalars(query.order_by(ShareLinkSubmission.created_at.desc(),
+                                    ShareLinkSubmission.id.desc()).offset((page - 1) * page_size)
+                      .limit(page_size)).all()
+    return {"items": [serialize_share_submission(row) for row in rows],
+            "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/share-links/check")
+def check_existing_share_links(db: Session = Depends(get_db)) -> dict[str, int]:
+    """Inspect stored links and retained crawl results without contacting the cloud."""
+    return scan_existing_links(db)
+
+
+class ShareLinkSubmissionPatch(BaseModel):
+    software_name: str | None = Field(default=None, max_length=255)
+    external_url: str | None = Field(default=None, max_length=2048)
+    extract_code: str | None = Field(default=None, max_length=64)
+    filename: str | None = Field(default=None, max_length=255)
+    file_arch: str | None = Field(default=None, max_length=64)
+    os: str | None = Field(default=None, max_length=64)
+    architecture: str | None = Field(default=None, max_length=64)
+
+
+@router.patch("/share-links/{submission_id}")
+def edit_share_link_submission(submission_id: int, patch: ShareLinkSubmissionPatch,
+                               db: Session = Depends(get_db)) -> dict[str, Any]:
+    row = db.get(ShareLinkSubmission, submission_id)
+    if row is None:
+        raise HTTPException(404, "Share link registration record not found")
+    try:
+        row = update_submission(db, row, patch.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+    return serialize_share_submission(row)
+
+
+@router.post("/share-links/{submission_id}/register", status_code=202)
+def register_share_link(submission_id: int, db: Session = Depends(get_db)) -> dict[str, Any]:
+    if not settings.cloud_integration_api_key:
+        raise HTTPException(503, "Set CLOUD_INTEGRATION_API_KEY in backend .env")
+    row = db.get(ShareLinkSubmission, submission_id)
+    if row is None:
+        raise HTTPException(404, "Share link registration record not found")
+    try:
+        job = queue_submission(db, row)
+        db.commit()
+        db.refresh(job)
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(422, str(exc)) from exc
+    from app.jobs.share_link_runner import enqueue as enqueue_share_link
+    if not enqueue_share_link(job.id):
+        job.status = e.JobStatus.FAILED
+        job.error_message = "Share link registration queue is unavailable"
+        job.finished_at = beijing_now()
+        row.status = e.ShareLinkSubmissionStatus.FAILED
+        row.error_message = job.error_message
+        db.commit()
+        raise HTTPException(503, "Share link registration queue is unavailable")
+    return serialize(RESOURCES[-1], job, db)
+
+
+@router.post("/share-links/register-ready", status_code=202)
+def register_ready_share_links(db: Session = Depends(get_db)) -> dict[str, Any]:
+    if not settings.cloud_integration_api_key:
+        raise HTTPException(503, "Set CLOUD_INTEGRATION_API_KEY in backend .env")
+    from app.storage.share_link_registry import enqueue_ready
+    from app.jobs.share_link_runner import enqueue as enqueue_share_link
+    jobs = enqueue_ready(db)
+    queued = []
+    for job in jobs:
+        if enqueue_share_link(job.id):
+            queued.append(job.id)
+        else:
+            job.status = e.JobStatus.FAILED
+            job.error_message = "Share link registration queue is unavailable"
+            job.finished_at = beijing_now()
+            row = db.get(ShareLinkSubmission, job.target_id)
+            if row:
+                row.status = e.ShareLinkSubmissionStatus.FAILED
+                row.error_message = job.error_message
+    db.commit()
+    return {"queued": len(queued), "job_ids": queued}
 
 
 @router.patch("/settings")

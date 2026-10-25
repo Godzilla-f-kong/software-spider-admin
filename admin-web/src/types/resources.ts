@@ -15,6 +15,7 @@ export interface ResourceConfig {
   columnLabels?: Record<string, { zh: string; en: string }>
   search?: boolean
   filters?: string[]
+  filterOptions?: Record<string, readonly string[]>
 }
 
 const field = (key: string, label: string, type: InputType = 'text', options?: readonly string[], required = false): Field => ({ key, label, type, options, required })
@@ -24,7 +25,6 @@ const statuses = {
   source: ['NEW', 'HEALTHY', 'FAILED', 'DISABLED'],
   release: ['DISCOVERED', 'PROCESSING', 'READY', 'PUBLISHED', 'REJECTED'],
   download: ['NOT_DOWNLOADED', 'QUEUED', 'DOWNLOADING', 'DOWNLOADED', 'FAILED'],
-  verify: ['PENDING', 'VERIFYING', 'VERIFIED', 'REJECTED', 'MANUAL_REVIEW'],
   storage: ['PENDING', 'UPLOADING', 'AVAILABLE', 'FAILED', 'EXPIRED'],
   content: ['NOT_GENERATED', 'GENERATING', 'DRAFT', 'REVIEWED', 'APPROVED', 'PUBLISHED'],
   listing: ['DRAFT', 'REVIEW_REQUIRED', 'APPROVED', 'PUBLISHED', 'PAUSED', 'REMOVED'],
@@ -40,58 +40,61 @@ export const resources: Record<string, ResourceConfig> = {
     field('commercial_score', '商业评分', 'number'), field('seo_score', 'SEO 评分', 'number'), field('brand_relevance_score', '品牌相关评分', 'number'), field('priority_score', '优先级评分', 'number'),
     field('status', '状态', 'select', statuses.candidate),
   ] },
-  software: { title: '已抓取软件', path: 'software', search: true, filters: ['status', 'category'], columns: ['id', 'name', 'developer', 'category', 'license', 'status', 'latest_release', 'updated_at'], fields: [
+  software: { title: '已抓取软件', path: 'software', search: true, filters: ['status', 'category', 'origin_region'], columns: ['id', 'name', 'developer', 'category', 'origin_region', 'license', 'status', 'latest_release', 'updated_at'], fields: [
     field('name', '软件名称', 'text', undefined, true), field('slug', '唯一标识 Slug', 'text', undefined, true), field('developer', '开发者 / 维护组织'), field('category', '软件分类'),
-    field('license', '许可证'), field('official_url', '官网 URL'), field('summary', '摘要', 'textarea'), field('description', '描述', 'textarea'), field('status', '状态', 'select', statuses.software),
+    field('origin_region', '国内/国外', 'select', ['DOMESTIC', 'FOREIGN', 'UNKNOWN'], true), field('license', '许可证'), field('official_url', '官网 URL'), field('summary', '摘要', 'textarea'), field('description', '描述', 'textarea'), field('status', '状态', 'select', statuses.software),
   ] },
   'crawl-pools': { title: 'URL 抓取池', path: 'crawl-pools', search: true, filters: ['enabled', 'status'],
+    filterOptions: { enabled: ['true', 'false'], status: statuses.source },
     columns: ['id', 'base_url', 'enabled', 'max_pages', 'max_depth', 'last_result_count', 'status', 'last_checked_at', 'last_error'], fields: [
       field('base_url', '网站主页 URL', 'text', undefined, true), field('enabled', '启用', 'switch'),
       field('max_pages', '单次请求预算（可续扫）', 'number'), field('max_depth', '站内最大链接深度', 'number'),
       field('search_path_template', '站内搜索路径模板（{query}）'), field('category_paths', '分类入口路径（每行一个）', 'textarea'),
     ] },
-  sources: { title: '已收录软件来源', path: 'sources', filters: ['software_id', 'source_type'], columns: ['id', 'software_id', 'source_type', 'source_url', 'adapter_type', 'priority', 'enabled', 'status', 'automation_status', 'last_checked_at', 'last_success_at', 'last_error'], fields: [
+  sources: { title: '已收录软件来源', path: 'sources', filters: ['software_id', 'source_type'], columns: ['id', 'software_name', 'software_id', 'source_type', 'source_url', 'adapter_type', 'priority', 'enabled', 'status', 'automation_status', 'last_checked_at', 'last_success_at', 'last_error'], fields: [
     field('software_id', '所属软件 ID', 'number', undefined, true), field('source_type', '来源类别', 'select', ['OFFICIAL', 'OFFICIAL_DOWNLOAD', 'GITHUB', 'MIRROR', 'OTHER'], true),
     field('source_url', '待抓取页面 URL', 'text', undefined, true), field('adapter_type', '抓取适配器类型', 'select', ['MANUAL', 'GENERIC_HTML', 'GITHUB_RELEASE', 'JSON_API', 'STATIC_URL', 'BROWSER']),
     field('priority', '优先级', 'number'), field('enabled', '启用', 'switch'), field('status', '状态', 'select', statuses.source),
     field('automation_status', '自动访问状态', 'select', ['UNKNOWN', 'ALLOWED', 'MANUAL_REQUIRED', 'DISABLED']),
   ] },
-  releases: { title: '软件版本', path: 'releases', search: true, filters: ['software_id', 'status'], columns: ['id', 'software_id', 'version', 'release_date', 'is_latest', 'status', 'created_at'], fields: [
+  releases: { title: '软件版本', path: 'releases', search: true, filters: ['software_id', 'status'], columns: ['id', 'software_name', 'software_id', 'version', 'release_date', 'is_latest', 'status', 'created_at'], fields: [
     field('software_id', '所属软件 ID', 'number', undefined, true), field('version', '版本号', 'text', undefined, true), field('release_date', '正式发布日期', 'date'),
     field('release_notes', '版本说明', 'textarea'), field('is_latest', '最新版本', 'switch'), field('status', '状态', 'select', statuses.release),
   ] },
-  variants: { title: '版本运行环境', path: 'variants', filters: ['release_id', 'os', 'architecture'], columns: ['id', 'release_id', 'os', 'architecture', 'edition', 'language', 'min_os_version'], fields: [
+  variants: { title: '版本运行环境', path: 'variants', filters: ['release_id', 'os', 'architecture', 'cpu_family'], columns: ['id', 'software_name', 'release_id', 'os', 'architecture', 'cpu_family', 'edition', 'language', 'min_os_version'], fields: [
     field('release_id', '所属软件版本 ID', 'number', undefined, true), field('os', '目标操作系统', 'select', ['WINDOWS', 'LINUX', 'MACOS', 'ANDROID', 'OTHER', 'UNKNOWN'], true),
-    field('architecture', '架构', 'select', ['X86', 'X64', 'ARM', 'ARM64', 'UNIVERSAL', 'OTHER', 'UNKNOWN'], true), field('edition', '版本类型'),
-    field('language', '语言'), field('min_os_version', '最低 OS 版本'), field('notes', '备注', 'textarea'),
+    field('architecture', '系统架构', 'select', ['X86', 'X64', 'ARM', 'ARM64', 'UNIVERSAL', 'OTHER', 'UNKNOWN'], true), field('cpu_family', 'CPU 架构族', 'select', ['AMD', 'ARM', 'UNKNOWN'], true), field('edition', '版本类型'),
+    field('language', '语言', 'select', ['ZH', 'EN', 'UNKNOWN']), field('min_os_version', '最低 OS 版本'), field('notes', '备注', 'textarea'),
   ] },
-  artifacts: { title: '安装包文件', path: 'artifacts', search: true, filters: ['variant_id', 'download_status', 'verification_status'], columns: ['id', 'variant_id', 'package_type', 'filename', 'file_size', 'download_status', 'verification_status', 'local_exists'], fields: [
+  artifacts: { title: '安装包文件', path: 'artifacts', search: true, filters: ['variant_id', 'download_status'],
+    filterOptions: { download_status: statuses.download }, columns: ['id', 'software_name', 'variant_id', 'package_type', 'install_type', 'filename', 'md5', 'file_size', 'download_status', 'local_exists'], fields: [
     field('variant_id', '所属运行环境 ID', 'number', undefined, true), field('package_type', '安装包格式', 'select', ['EXE', 'MSI', 'ZIP', 'SEVEN_Z', 'TAR_GZ', 'TAR_XZ', 'DMG', 'PKG', 'DEB', 'RPM', 'APPIMAGE', 'OTHER'], true),
-    field('filename', '文件名', 'text', undefined, true), field('file_size', '字节大小', 'number'), field('source_url', '下载 URL'),
+    field('install_type', '免安装/安装包', 'select', ['PORTABLE', 'INSTALLER', 'UNKNOWN'], true), field('filename', '文件名', 'text', undefined, true), field('file_size', '字节大小', 'number'), field('source_url', '下载 URL'),
   ] },
-  storage: { title: '文件存储位置', path: 'storage', filters: ['artifact_id', 'provider', 'status'], columns: ['id', 'artifact_id', 'provider', 'remote_path', 'share_url', 'status'], fields: [
+  storage: { title: '文件存储位置', path: 'storage', filters: ['artifact_id', 'provider', 'status'], columns: ['id', 'software_name', 'artifact_id', 'provider', 'remote_path', 'share_url', 'status'], fields: [
     field('artifact_id', '所属安装包 ID', 'number', undefined, true), field('provider', '存储服务提供方', 'select', ['LOCAL', 'BAIDU', 'PAN123', 'SELF_HOSTED', 'S3', 'OTHER'], true),
     field('remote_path', '远程路径'), field('remote_file_id', '远程文件 ID'), field('share_url', '分享链接'), field('share_code', '分享码'), field('status', '状态', 'select', statuses.storage),
   ] },
-  content: { title: '生成内容草稿', path: 'content', search: true, filters: ['software_id', 'content_type', 'status'], columns: ['id', 'software_id', 'release_id', 'content_type', 'title', 'status', 'updated_at'], fields: [
+  content: { title: '生成内容草稿', path: 'content', search: true, filters: ['software_id', 'content_type', 'status'], columns: ['id', 'software_name', 'software_id', 'release_id', 'content_type', 'title', 'status', 'updated_at'], fields: [
     field('software_id', '所属软件 ID', 'number', undefined, true), field('release_id', '关联软件版本 ID', 'number'), field('content_type', '内容用途', 'select', ['WEBSITE', 'XIANYU', 'TAOBAO', 'VERSION_NOTICE'], true),
     field('skill_name', 'Skill 名称'), field('skill_version', 'Skill 版本'), field('title', '标题'), field('content', '正文', 'textarea'), field('status', '状态', 'select', statuses.content),
   ] },
-  listings: { title: '电商发布文案', path: 'listings', search: true, filters: ['software_id', 'platform', 'status'], columns: ['id', 'software_id', 'platform', 'title', 'price', 'status', 'published_at'], fields: [
+  listings: { title: '电商发布文案', path: 'listings', search: true, filters: ['software_id', 'platform', 'status'], columns: ['id', 'software_name', 'software_id', 'platform', 'title', 'price', 'status', 'published_at'], fields: [
     field('software_id', '所属已抓取软件 ID', 'number', undefined, true), field('release_id', '关联软件版本 ID', 'number'), field('platform', '电商发布渠道', 'select', ['XIANYU', 'TAOBAO'], true),
     field('generated_content_id', '关联内容 ID', 'number'), field('title', '标题', 'text', undefined, true), field('description', '描述', 'textarea'),
     field('price', '价格', 'number'), field('listing_url', '链接'), field('status', '状态', 'select', statuses.listing),
   ] },
-  jobs: { title: '后台任务', path: 'jobs', filters: ['job_type', 'status'], columns: ['id', 'job_type', 'target_type', 'target_id', 'status', 'progress', 'bytes_downloaded', 'total_bytes', 'speed_bytes_per_second', 'message', 'created_at', 'started_at', 'finished_at'], fields: [
-    field('job_type', '任务类型', 'select', ['CRAWL', 'CHECK_RELEASE', 'DOWNLOAD', 'VERIFY', 'UPLOAD_STORAGE', 'UPLOAD_BAIDU', 'GENERATE_WEBSITE', 'GENERATE_XIANYU', 'GENERATE_TAOBAO', 'PUBLISH_WEBSITE'], true),
-    field('target_type', '任务目标类型', 'select', ['candidate', 'software', 'source', 'release', 'variant', 'artifact', 'content', 'listing'], true), field('target_id', '任务目标记录', 'number', undefined, true), field('message', '备注'),
+  jobs: { title: '后台任务', path: 'jobs', filters: ['job_type', 'status'],
+    filterOptions: { status: statuses.job }, columns: ['id', 'job_type', 'target_type', 'target_id', 'status', 'progress', 'bytes_downloaded', 'total_bytes', 'speed_bytes_per_second', 'message', 'created_at', 'started_at', 'finished_at'], fields: [
+    field('job_type', '任务类型', 'select', ['CRAWL', 'CHECK_RELEASE', 'DOWNLOAD', 'UPLOAD_STORAGE', 'UPLOAD_BAIDU', 'REGISTER_SHARE_LINK', 'GENERATE_WEBSITE', 'GENERATE_XIANYU', 'GENERATE_TAOBAO', 'PUBLISH_WEBSITE'], true),
+    field('target_type', '任务目标类型', 'select', ['candidate', 'software', 'source', 'release', 'variant', 'artifact', 'share_link_submission', 'content', 'listing'], true), field('target_id', '任务目标记录', 'number', undefined, true), field('message', '备注'),
   ] },
 }
 
 resources.links = { title: '\u7f51\u76d8\u4e0e\u4e0b\u8f7d\u5165\u53e3', path: 'links', search: true,
   columnLabels: { provider: { zh: '\u7f51\u76d8\u5e73\u53f0', en: 'Link provider' } },
   filters: ['software_id', 'source_id', 'provider', 'review_status'],
-  columns: ['id', 'software_id', 'source_id', 'release_id', 'provider', 'link_type', 'link_url', 'access_code', 'review_status'],
+  columns: ['id', 'software_name', 'software_id', 'source_id', 'release_id', 'provider', 'link_type', 'link_url', 'access_code', 'review_status'],
   fields: [field('software_id', '\u8f6f\u4ef6 ID', 'number', undefined, true),
     field('source_id', '\u6765\u6e90 ID', 'number', undefined, true),
     field('release_id', '\u7248\u672c ID', 'number'),
@@ -106,8 +109,9 @@ export const labels: Record<string, string> = Object.fromEntries(Object.values(r
 Object.assign(labels, {
   automation_status: '自动访问状态', last_error: '最近抓取错误', last_checked_at: '最近检查时间', last_success_at: '最近成功时间',
   id: '记录 ID', created_at: '记录创建时间', updated_at: '最近更新时间', latest_release: '最新软件版本号',
+  software_name: '软件名称',
   progress: '任务完成进度', started_at: '任务开始时间', finished_at: '任务结束时间',
-  signature_status: '数字签名验证状态', sales_signal: '商业销售线索', search_signal: '搜索热度线索',
+  sales_signal: '商业销售线索', search_signal: '搜索热度线索',
   competition_signal: '市场竞争线索', commercial_score: '商业价值评分', seo_score: '搜索引擎优化评分',
   brand_relevance_score: '品牌相关度评分', priority_score: '候选优先级评分',
   official_url: '官方网站 URL', summary: '软件简介', description: '详细描述', license: '软件许可证',
@@ -126,7 +130,7 @@ Object.assign(labels, {
   provider: '文件存储服务', software_id: '关联已抓取软件 ID', release_id: '关联软件版本 ID',
   variant_id: '关联版本运行环境 ID', artifact_id: '关联安装包文件 ID', status: '当前记录状态',
   local_exists: '本机文件存在',
-  download_status: '下载状态', verification_status: '文件校验状态',
+  download_status: '下载状态',
   bytes_downloaded: '已下载字节数', total_bytes: '总字节数', speed_bytes_per_second: '平均下载速度（字节/秒）',
   version: '软件版本号', title: '文案标题', content: '文案正文', platform: '发布平台', message: '任务进度说明',
 })

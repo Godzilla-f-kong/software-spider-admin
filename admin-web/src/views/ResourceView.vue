@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import ResourceTable from '../components/ResourceTable.vue'
 import { resources } from '../types/resources'
+defineOptions({ name: 'ResourceView' })
 const props = defineProps<{ name: string }>()
 const actual = computed(() => props.name === 'publishing' ? 'listings' : props.name === 'downloads' ? 'jobs' : props.name)
 const config = computed(() => props.name === 'downloads' ? { ...resources.jobs, title: '下载任务' } : resources[actual.value])

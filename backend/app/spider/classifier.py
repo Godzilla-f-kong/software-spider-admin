@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass
 
-from app.core.enums import Architecture, OperatingSystem, PackageType
+from app.core.enums import Architecture, CpuFamily, InstallType, OperatingSystem, PackageType
 
 
 @dataclass(frozen=True)
@@ -9,6 +9,9 @@ class ArtifactClassification:
     os: OperatingSystem
     architecture: Architecture
     package_type: PackageType
+    cpu_family: CpuFamily
+    install_type: InstallType
+    language: str
 
 
 class ArtifactClassifier:
@@ -58,4 +61,12 @@ class ArtifactClassifier:
             architecture = Architecture.UNIVERSAL
         else:
             architecture = Architecture.UNKNOWN
-        return ArtifactClassification(os, architecture, package)
+        cpu_family = (CpuFamily.ARM if architecture in {Architecture.ARM, Architecture.ARM64}
+                      else CpuFamily.AMD if architecture in {Architecture.X86, Architecture.X64}
+                      else CpuFamily.UNKNOWN)
+        portable = self._has(text, r"portable|noinstall|免安装") or package is PackageType.APPIMAGE
+        archive_only = package in {PackageType.ZIP, PackageType.SEVEN_Z, PackageType.TAR_GZ, PackageType.TAR_XZ}
+        install_type = (InstallType.PORTABLE if portable else InstallType.UNKNOWN if archive_only
+                        else InstallType.INSTALLER if package is not PackageType.OTHER else InstallType.UNKNOWN)
+        language = "ZH" if self._has(text, r"zh|zh-cn|chinese|简体中文|繁體中文") else "EN" if self._has(text, r"en|en-us|english") else "UNKNOWN"
+        return ArtifactClassification(os, architecture, package, cpu_family, install_type, language)

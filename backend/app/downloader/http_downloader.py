@@ -91,7 +91,7 @@ class HttpDownloader:
                         if response.status_code not in {200, 206}:
                             raise DownloadError("SERVER_ERROR", f"Unexpected HTTP {response.status_code}")
                         if response.headers.get("Content-Encoding", "identity").lower() not in {"identity", ""}:
-                            raise DownloadError("VERIFICATION_FAILED", "Unexpected compressed HTTP transfer encoding")
+                            raise DownloadError("UNSUPPORTED_TRANSFER_ENCODING", "Unexpected compressed HTTP transfer encoding")
                         if response.status_code == 206:
                             content_range = response.headers.get("Content-Range", "")
                             match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range)
@@ -138,7 +138,7 @@ class HttpDownloader:
                         if total is not None and downloaded != total:
                             raise DownloadError("CONTENT_LENGTH_MISMATCH", "Received byte count differs from Content-Length")
                         if downloaded == 0:
-                            raise DownloadError("VERIFICATION_FAILED", "Downloaded file is empty")
+                            raise DownloadError("EMPTY_DOWNLOAD", "Downloaded file is empty")
                         sidecar.unlink(missing_ok=True)
                         return DownloadResult(request.part_path, filename, downloaded,
                                               response.headers.get("Content-Type"), current, time.monotonic() - start,

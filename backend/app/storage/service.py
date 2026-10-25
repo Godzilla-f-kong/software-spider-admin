@@ -1,19 +1,20 @@
 """Storage business rules and OAuth account persistence; providers never use SQL."""
 from datetime import timedelta
 from pathlib import Path
+import time
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.enums import (JobStatus, JobType, RedistributionStatus, ShareStatus,
-                            StorageAccountStatus, StorageProviderType, StorageStatus, UploadStatus,
-                            VerificationStatus)
+from app.core.enums import (DownloadStatus, JobStatus, JobType, ShareStatus,
+                            StorageAccountStatus, StorageProviderType, StorageStatus, UploadStatus)
 from app.db.base import beijing_now
 from app.models import ArtifactStorage, Job, SoftwareArtifact, StorageAccount
 from app.downloader.policy import safe_component, safe_filename
 from app.storage.archive import ArchiveManager
+from app.downloader.staging import StagingManager
 from app.storage.exceptions import StorageError
 from app.storage.models import UploadRequest
 from app.storage.providers.baidu_provider import BaiduPanProvider
@@ -74,11 +75,37 @@ def account_for_upload(db: Session, account_id: int | None = None) -> StorageAcc
     return account
 
 
-def archived_artifact(artifact: SoftwareArtifact, require_redistribution: bool = True) -> Path:
-    if artifact.verification_status != VerificationStatus.VERIFIED:
-        raise StorageError("NOT_VERIFIED", "Artifact must be verified before upload")
-    if require_redistribution and artifact.redistribution_status != RedistributionStatus.ALLOWED:
-        raise StorageError("REDISTRIBUTION_NOT_ALLOWED", "Approve redistribution before upload")
+def archived_artifact(artifact: SoftwareArtifact, db: Session | None = None) -> Path:
+    manager = ArchiveManager()
+    local_exists = False
+    if artifact.local_path:
+        try:
+            local_exists = manager.resolve_relative(artifact.local_path).is_file()
+        except ValueError as exc:
+            raise StorageError("INVALID_LOCAL_PATH", "Artifact archive path is unsafe") from exc
+    if not local_exists and db is not None:
+        staged = StagingManager().complete(artifact.id)
+        if staged.is_file():
+            variant = artifact.variant
+            release = variant.release
+            relative = manager.archive_relative(release.software.slug, release.version, variant.os.value,
+                                                variant.architecture.value, artifact.filename)
+            try:
+                manager.archive(staged, relative)
+            except FileExistsError:
+                relative = relative.with_name(f"{relative.stem}-{time.time_ns()}{relative.suffix}")
+                manager.archive(staged, relative)
+            artifact.local_path = relative.as_posix()
+            artifact.file_size = (manager.root / relative).stat().st_size
+            artifact.download_status = DownloadStatus.DOWNLOADED
+            local = db.scalar(select(ArtifactStorage).where(ArtifactStorage.artifact_id == artifact.id,
+                ArtifactStorage.provider == StorageProviderType.LOCAL).limit(1))
+            if local is None:
+                local = ArtifactStorage(artifact_id=artifact.id, provider=StorageProviderType.LOCAL)
+                db.add(local)
+            local.remote_path = relative.as_posix()
+            local.status = StorageStatus.AVAILABLE
+            db.commit()
     if not artifact.local_path:
         raise StorageError("LOCAL_FILE_MISSING", "Artifact has no local archive path")
     try:
@@ -94,7 +121,7 @@ def queue_upload(db: Session, artifact_id: int, account_id: int | None = None) -
     artifact = db.get(SoftwareArtifact, artifact_id)
     if artifact is None:
         raise StorageError("NOT_FOUND", "Artifact not found")
-    archived_artifact(artifact)
+    archived_artifact(artifact, db)
     account = account_for_upload(db, account_id)
     existing = db.scalar(select(ArtifactStorage).where(ArtifactStorage.artifact_id == artifact_id,
                     ArtifactStorage.provider == StorageProviderType.BAIDU).with_for_update())
@@ -137,7 +164,7 @@ def queue_self_hosted_upload(db: Session, artifact_id: int, file_arch: str) -> J
     artifact = db.get(SoftwareArtifact, artifact_id)
     if artifact is None:
         raise StorageError("NOT_FOUND", "Artifact not found")
-    archived_artifact(artifact, require_redistribution=False)
+    archived_artifact(artifact, db)
     if file_arch not in SELF_HOSTED_FILE_ARCH_CATEGORIES:
         raise StorageError("INVALID_CATEGORY", "Select a valid cloud-drive file category")
     existing = db.scalar(select(ArtifactStorage).where(
@@ -184,7 +211,13 @@ def run_upload(db: Session, job: Job, provider: BaiduPanProvider) -> None:
     account = db.get(StorageAccount, (job.payload or {}).get("account_id"))
     if not artifact or not storage or not account:
         raise StorageError("NOT_FOUND", "Upload target, location or account is missing")
-    path = archived_artifact(artifact)
+    path = archived_artifact(artifact, db)
+    if not artifact.md5:
+        artifact.md5 = SelfHostedPanProvider._md5(path)
+        db.commit()
+    variant = artifact.variant
+    release = variant.release
+    software = release.software
     token = access_token(db, account, provider)
     storage.status = StorageStatus.UPLOADING
     storage.upload_status = UploadStatus.UPLOADING
@@ -211,7 +244,13 @@ def run_self_hosted_upload(db: Session, job: Job, provider: SelfHostedPanProvide
     storage = db.get(ArtifactStorage, (job.payload or {}).get("storage_id"))
     if not artifact or not storage:
         raise StorageError("NOT_FOUND", "Upload target or storage record is missing")
-    path = archived_artifact(artifact, require_redistribution=False)
+    path = archived_artifact(artifact, db)
+    if not artifact.md5:
+        artifact.md5 = SelfHostedPanProvider._md5(path)
+        db.commit()
+    variant = artifact.variant
+    release = variant.release
+    software = release.software
     file_arch = (job.payload or {}).get("file_arch")
     storage.status = StorageStatus.UPLOADING
     storage.upload_status = UploadStatus.UPLOADING
@@ -226,7 +265,12 @@ def run_self_hosted_upload(db: Session, job: Job, provider: SelfHostedPanProvide
     result = provider.upload(UploadRequest(
         artifact_id=artifact.id, local_path=path, remote_path="", progress=progress,
         metadata={"filename": artifact.filename, "file_size": path.stat().st_size,
-                  "file_arch": file_arch, "sha256": artifact.sha256 or ""},
+                  "file_arch": file_arch, "software_metadata": {
+                      "md5": artifact.md5, "sha256": artifact.sha256, "version": release.version,
+                      "origin_region": software.origin_region.value, "os": variant.os.value,
+                      "architecture": variant.architecture.value, "cpu_family": variant.cpu_family.value,
+                      "install_type": artifact.install_type.value, "language": variant.language or "UNKNOWN",
+                  }},
     ))
     storage.remote_path = result.remote_path
     storage.remote_file_id = result.remote_file_id
@@ -243,7 +287,6 @@ def create_share(db: Session, storage: ArtifactStorage, password: str | None = N
                  provider: BaiduPanProvider | None = None) -> ArtifactStorage:
     if storage.provider != StorageProviderType.BAIDU or storage.upload_status != UploadStatus.SUCCESS or not storage.remote_file_id:
         raise StorageError("NOT_UPLOADED", "Baidu upload must finish before sharing")
-    archived_artifact(storage.artifact)
     if storage.share_status == ShareStatus.CREATED:
         raise StorageError("ALREADY_SHARED", "Disable the current share before creating another")
     account = account_for_upload(db, storage.account_id)

@@ -232,10 +232,11 @@ class PoolCrawler:
                                     "artifacts": [{"filename": item.filename, "url": item.download_url,
                                                    "os": item.os.value, "architecture": item.architecture.value,
                                                    "package_type": item.package_type.value,
-                                                   "target_match": item in artifacts} for item in all_artifacts[:30]],
+                                                   "target_match": item in artifacts} for item in all_artifacts],
                                     "links": [{"url": link.link_url, "provider": link.provider.value,
+                                               "link_type": link.link_type.value, "label": link.label,
                                                "access_code": link.access_code} for release in found.releases
-                                              for link in release.links][:30],
+                                              for link in release.links],
                                     "warnings": found.warnings[:5]})
                                 if status == "MATCHED":
                                     found_targets.add(target.id)

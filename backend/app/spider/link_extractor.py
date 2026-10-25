@@ -54,6 +54,11 @@ class DownloadLinkExtractor:
 
     def extract(self, soup: BeautifulSoup, page_url: str) -> tuple[list[DownloadLinkCandidate], set[str]]:
         article_host = urlsplit(page_url).hostname or ""
+        page_codes = set(self.CODE.findall(soup.get_text(" ", strip=True)))
+        provider_share_count = sum(
+            self.provider(urlsplit(str(anchor.get("href"))).hostname or "") is not DownloadLinkProvider.OTHER
+            for anchor in soup.select("a[href]")[:500]
+        )
         section_anchors: list[Tag] = []
         for heading in soup.select("h2, h3, h4, h5"):
             if not self.SECTION.search(heading.get_text(" ", strip=True)):
@@ -106,6 +111,9 @@ class DownloadLinkExtractor:
                          else DownloadLinkType.DOWNLOAD_PAGE)
             candidates.append(DownloadLinkCandidate(link_url=url, source_page_url=page_url,
                             provider=provider, link_type=link_type,
-                            access_code=self._access_code(url, context, unambiguous),
+                            access_code=self._access_code(url, context, unambiguous)
+                            or (next(iter(page_codes)) if provider is not DownloadLinkProvider.OTHER
+                                and len(page_codes) == 1 and provider_share_count == 1
+                                else None),
                             label=label or None, context_text=context or None))
         return candidates, section_urls

@@ -8,7 +8,6 @@ from sqlalchemy.orm import Session
 from app.core.enums import CandidateStatus, DownloadStatus, JobStatus, JobType, SoftwareStatus
 from app.models import Job, Software, SoftwareArtifact, SoftwareCandidate, SoftwareRelease
 from app.storage.archive import ArchiveManager
-from app.downloader.staging import StagingManager
 
 
 def slugify(name: str) -> str:
@@ -39,6 +38,42 @@ def accept_candidate(db: Session, candidate_id: int) -> Software:
     return software
 
 
+def ensure_candidate_software(db: Session, candidate_id: int) -> Software:
+    """Create or link a catalog record for a successfully crawled candidate."""
+    candidate = db.get(SoftwareCandidate, candidate_id)
+    if candidate is None:
+        raise HTTPException(404, "Candidate not found")
+    if candidate.status in {CandidateStatus.REJECTED, CandidateStatus.IGNORED}:
+        raise HTTPException(409, f"Candidate is {candidate.status.value.lower()}")
+    if candidate.software_id:
+        software = db.get(Software, candidate.software_id)
+        if software:
+            if candidate.status != CandidateStatus.ACCEPTED:
+                candidate.status = CandidateStatus.ACCEPTED
+                db.commit()
+            return software
+
+    base_slug = slugify(candidate.name)
+    if not base_slug:
+        raise HTTPException(422, "Name cannot be converted to a slug; create software manually")
+    existing = db.scalar(select(Software).where(Software.slug == base_slug))
+    if existing:
+        if existing.name.strip().casefold() != candidate.name.strip().casefold():
+            raise HTTPException(409, f"Software slug conflicts with a different name: {existing.id}")
+        software = existing
+    else:
+        software = Software(name=candidate.name, slug=base_slug, category=candidate.category,
+                            official_url=candidate.source_url, status=SoftwareStatus.ACTIVE)
+        db.add(software)
+        db.flush()
+
+    candidate.status = CandidateStatus.ACCEPTED
+    candidate.software_id = software.id
+    db.commit()
+    db.refresh(software)
+    return software
+
+
 def set_latest_release(db: Session, release: SoftwareRelease) -> None:
     if release.is_latest:
         for previous in db.scalars(select(SoftwareRelease).where(
@@ -56,9 +91,6 @@ def create_artifact_job(db: Session, artifact_id: int, job_type: JobType, *, red
     if job_type == JobType.DOWNLOAD and not artifact.source_url:
         raise HTTPException(422, "Artifact source_url is required for download")
     manager = ArchiveManager()
-    staged = StagingManager().complete(artifact_id)
-    if job_type == JobType.DOWNLOAD and staged.exists() and artifact.verification_status.value == "MANUAL_REVIEW":
-        raise HTTPException(409, "Review the staged file before downloading again")
     local_exists = False
     if artifact.local_path:
         try:
@@ -67,17 +99,17 @@ def create_artifact_job(db: Session, artifact_id: int, job_type: JobType, *, red
             pass
     if job_type == JobType.DOWNLOAD and local_exists and not redownload:
         raise HTTPException(409, "Already downloaded; use Re-download")
-    if job_type == JobType.VERIFY and not local_exists and not staged.is_file():
-        raise HTTPException(409, "No downloaded local file is available to verify")
+    if job_type != JobType.DOWNLOAD:
+        raise HTTPException(422, "Only artifact download jobs can be created")
     existing = db.scalar(select(Job).where(Job.job_type == job_type, Job.target_type == "artifact",
                                                 Job.target_id == artifact_id, Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING])))
     if existing:
         return existing
-    other = db.scalar(select(Job).where(Job.job_type.in_([JobType.DOWNLOAD, JobType.VERIFY]),
+    other = db.scalar(select(Job).where(Job.job_type == JobType.DOWNLOAD,
         Job.job_type != job_type, Job.target_type == "artifact", Job.target_id == artifact_id,
         Job.status.in_([JobStatus.PENDING, JobStatus.RUNNING])).limit(1))
     if other:
-        raise HTTPException(409, "Another download or verification job is active for this artifact")
+        raise HTTPException(409, "A download job is active for this artifact")
     job = Job(job_type=job_type, target_type="artifact", target_id=artifact_id,
               status=JobStatus.PENDING, progress=0, message="Awaiting a worker",
               payload={"redownload": redownload} if job_type == JobType.DOWNLOAD else None)

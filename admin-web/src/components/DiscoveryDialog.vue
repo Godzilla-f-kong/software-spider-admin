@@ -63,7 +63,8 @@ async function preview(): Promise<void> {
   importing.value = null
   try { job.value = await api.action(`/sources/${props.source.id}/discover/preview`) }
   catch { return }
-  startPolling(job.value.id, 'preview')
+  const previewJob = job.value
+  if (previewJob) startPolling(previewJob.id, 'preview')
 }
 async function importAll(): Promise<void> {
   if (!props.source || !job.value) return
